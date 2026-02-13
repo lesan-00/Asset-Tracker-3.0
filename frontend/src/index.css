@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Core palette - Professional slate/indigo */
+    --background: 220 20% 97%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Primary - Deep indigo */
+    --primary: 226 70% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Soft slate */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* Accent - Teal for actions */
+    --accent: 173 58% 39%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 226 70% 45%;
+
+    --radius: 0.625rem;
+
+    /* Status colors */
+    --status-available: 142 71% 45%;
+    --status-assigned: 226 70% 55%;
+    --status-repair: 38 92% 50%;
+    --status-lost: 0 84% 60%;
+    --status-retired: 220 9% 46%;
+
+    /* Chart colors */
+    --chart-1: 226 70% 45%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 142 71% 45%;
+    --chart-5: 0 84% 60%;
+
+    /* Sidebar */
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 220 20% 85%;
+    --sidebar-primary: 226 70% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 40% 18%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 222 40% 18%;
+    --sidebar-ring: 226 70% 55%;
+    --sidebar-muted: 220 10% 50%;
+  }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 220 20% 97%;
+
+    --card: 222 47% 11%;
+    --card-foreground: 220 20% 97%;
+
+    --popover: 222 47% 11%;
+    --popover-foreground: 220 20% 97%;
+
+    --primary: 226 70% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 222 40% 18%;
+    --secondary-foreground: 220 20% 97%;
+
+    --muted: 222 40% 18%;
+    --muted-foreground: 220 10% 60%;
+
+    --accent: 173 58% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 222 40% 18%;
+    --input: 222 40% 18%;
+    --ring: 226 70% 55%;
+
+    --sidebar-background: 222 47% 6%;
+    --sidebar-foreground: 220 20% 85%;
+    --sidebar-primary: 226 70% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 40% 14%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 222 40% 14%;
+    --sidebar-ring: 226 70% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+}
+
+@layer utilities {
+  /* Status badge variants */
+  .status-available {
+    @apply bg-[hsl(var(--status-available)/0.15)] text-[hsl(var(--status-available))] border-[hsl(var(--status-available)/0.3)];
+  }
+  
+  .status-assigned {
+    @apply bg-[hsl(var(--status-assigned)/0.15)] text-[hsl(var(--status-assigned))] border-[hsl(var(--status-assigned)/0.3)];
+  }
+  
+  .status-repair {
+    @apply bg-[hsl(var(--status-repair)/0.15)] text-[hsl(var(--status-repair))] border-[hsl(var(--status-repair)/0.3)];
+  }
+  
+  .status-lost {
+    @apply bg-[hsl(var(--status-lost)/0.15)] text-[hsl(var(--status-lost))] border-[hsl(var(--status-lost)/0.3)];
+  }
+  
+  .status-retired {
+    @apply bg-[hsl(var(--status-retired)/0.15)] text-[hsl(var(--status-retired))] border-[hsl(var(--status-retired)/0.3)];
+  }
+
+  /* Gradient backgrounds */
+  .gradient-primary {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(226 70% 55%) 100%);
+  }
+
+  .gradient-accent {
+    background: linear-gradient(135deg, hsl(var(--accent)) 0%, hsl(173 58% 50%) 100%);
+  }
+
+  /* Card hover effects */
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-lg hover:border-primary/20;
+  }
+
+  /* Table row hover */
+  .table-row-hover {
+    @apply transition-colors hover:bg-muted/50;
+  }
+}
