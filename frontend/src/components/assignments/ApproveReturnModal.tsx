@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type NextLaptopStatus = "AVAILABLE" | "UNDER_REPAIR";
+type NextLaptopStatus = "IN_STOCK" | "IN_REPAIR";
 
 interface ApproveReturnModalProps {
   open: boolean;
@@ -59,9 +59,9 @@ export function ApproveReturnModal({
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="AVAILABLE">Available</SelectItem>
-            <SelectItem value="UNDER_REPAIR">Under Repair</SelectItem>
+        <SelectContent>
+            <SelectItem value="IN_STOCK">In Stock</SelectItem>
+            <SelectItem value="IN_REPAIR">In Repair</SelectItem>
           </SelectContent>
         </Select>
         <DialogFooter>

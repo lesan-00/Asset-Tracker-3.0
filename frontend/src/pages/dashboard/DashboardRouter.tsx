@@ -1,7 +1,7 @@
 import { Navigate } from "react-router-dom";
 
 type StoredUser = {
-  role?: "ADMIN" | "STAFF";
+  role?: "ADMIN";
 };
 
 export default function DashboardRouter() {
@@ -13,10 +13,7 @@ export default function DashboardRouter() {
   try {
     const user = JSON.parse(raw) as StoredUser;
     if (user.role === "ADMIN") {
-      return <Navigate to="/dashboard/admin" replace />;
-    }
-    if (user.role === "STAFF") {
-      return <Navigate to="/dashboard/staff" replace />;
+      return <Navigate to="/dashboard" replace />;
     }
   } catch {
     return <Navigate to="/login" replace />;

@@ -9,17 +9,22 @@ export interface IssueListFilters {
   search?: string;
   status?: IssueStatus;
   priority?: IssuePriority;
+  assignedToUserId?: string;
 }
 
 export interface IssueListItem {
   id: string;
   laptopId: string;
+  assetId?: number;
   title: string;
   description: string;
   category: string;
   status: IssueStatus;
   priority: IssuePriority;
   reportedByUserId: string;
+  createdByUserId?: string;
+  reportedForStaffId?: string;
+  reportedForUserId?: string;
   assignedTo?: string;
   resolutionNotes?: string;
   createdAt: Date;
@@ -35,6 +40,19 @@ export interface IssueListItem {
     fullName?: string;
     email?: string;
   };
+  reportedFor?: {
+    id: string;
+    name?: string;
+    email?: string;
+  };
+}
+
+export interface PaginatedIssueResult {
+  data: IssueListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
 const toDbStatus = (status: IssueStatus): string => status.toUpperCase();
@@ -58,37 +76,45 @@ const normalizePriority = (priority: string): IssuePriority => {
 
 export class IssueModel {
   static async create(data: {
-    laptopId: string;
+    assetId: string;
     title: string;
     description: string;
     category: string;
     priority: IssuePriority;
     status?: IssueStatus;
-    reportedByUserId: string;
+    createdByUserId: string;
+    reportedForStaffId?: string | null;
   }): Promise<IssueListItem> {
+    const assetId = Number(data.assetId);
+    if (!Number.isInteger(assetId) || assetId <= 0) {
+      throw new Error("Invalid asset id");
+    }
+
     const id = uuidv4();
     await query(
       `INSERT INTO issues (
-        id, laptop_id, title, description, category, priority, status,
-        reported_by_user_id, reported_by, reported_date
+        id, asset_id, laptop_id, title, description, category, priority, status,
+        reported_by_user_id, reported_by, created_by_user_id, reported_for_staff_id, reported_for_user_id, reported_date
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)`,
       [
         id,
-        data.laptopId,
+        assetId,
         data.title,
         data.description,
         data.category,
         toDbPriority(data.priority),
         toDbStatus(data.status || "open"),
-        data.reportedByUserId,
-        data.reportedByUserId,
+        data.createdByUserId,
+        data.createdByUserId,
+        data.createdByUserId,
+        data.reportedForStaffId ?? null,
       ]
     );
 
     const issue = await this.findByIdForViewer(id, {
       role: "ADMIN",
-      userId: data.reportedByUserId,
+      userId: data.createdByUserId,
       email: "",
     });
     return issue as IssueListItem;
@@ -104,32 +130,44 @@ export class IssueModel {
     if (viewer.role !== "ADMIN") {
       whereClauses.push(
         `(
-          COALESCE(i.reported_by_user_id, i.reported_by) = ?
+          i.reported_for_user_id = ?
           OR EXISTS (
             SELECT 1
             FROM assignments a
             JOIN staff s ON s.id = a.staff_id
-            WHERE a.laptop_id = i.laptop_id
+            WHERE a.asset_id = i.asset_id
               AND a.returned_date IS NULL
-              AND LOWER(s.email) = LOWER(?)
+              AND s.email = ?
           )
         )`
       );
       values.push(viewer.userId, viewer.email);
     }
 
+    if (filters.assignedToUserId) {
+      whereClauses.push(
+        `(i.reported_for_user_id = ? OR EXISTS (
+            SELECT 1
+            FROM assignments a_assign
+            WHERE a_assign.asset_id = i.asset_id
+              AND a_assign.receiver_user_id = ?
+          ))`
+      );
+      values.push(filters.assignedToUserId, filters.assignedToUserId);
+    }
+
     if (filters.search) {
       whereClauses.push(
         `(
-          LOWER(i.title) LIKE ?
-          OR LOWER(i.description) LIKE ?
-          OR LOWER(COALESCE(i.category, '')) LIKE ?
-          OR LOWER(COALESCE(l.asset_tag, '')) LIKE ?
-          OR LOWER(COALESCE(l.brand, '')) LIKE ?
-          OR LOWER(COALESCE(l.model, '')) LIKE ?
+          i.title LIKE ?
+          OR i.description LIKE ?
+          OR COALESCE(i.category, '') LIKE ?
+          OR COALESCE(l.asset_tag, '') LIKE ?
+          OR COALESCE(l.brand, '') LIKE ?
+          OR COALESCE(l.model, '') LIKE ?
         )`
       );
-      const pattern = `%${filters.search.toLowerCase()}%`;
+      const pattern = `%${filters.search}%`;
       values.push(pattern, pattern, pattern, pattern, pattern, pattern);
     }
 
@@ -148,13 +186,16 @@ export class IssueModel {
     const result = await query(
       `SELECT
          i.id,
-         i.laptop_id as laptopId,
+         COALESCE(CAST(i.asset_id AS CHAR), i.laptop_id) as laptopId,
          i.title,
          i.description,
          i.category,
          i.status,
          i.priority,
          COALESCE(i.reported_by_user_id, i.reported_by) as reportedByUserId,
+         i.created_by_user_id as createdByUserId,
+         i.reported_for_staff_id as reportedForStaffId,
+         i.reported_for_user_id as reportedForUserId,
          i.assigned_to as assignedTo,
          i.resolution_notes as resolutionNotes,
          i.created_at as createdAt,
@@ -165,16 +206,143 @@ export class IssueModel {
          l.serial_number as laptopSerialNumber,
          u.id as reporterId,
          u.full_name as reporterName,
-         u.email as reporterEmail
+         u.email as reporterEmail,
+         s_reported_for.id as reportedForId,
+         s_reported_for.name as reportedForName,
+         s_reported_for.email as reportedForEmail
        FROM issues i
-       LEFT JOIN laptops l ON l.id = i.laptop_id
+       LEFT JOIN assets l ON l.id = i.asset_id
        LEFT JOIN users u ON u.id = COALESCE(i.reported_by_user_id, i.reported_by)
+       LEFT JOIN staff s_reported_for ON s_reported_for.id = i.reported_for_staff_id
        ${whereSQL}
        ORDER BY i.created_at DESC`,
       values
     );
 
     return (result.rows as any[]).map((row) => this.mapRowWithRelations(row));
+  }
+
+  static async findForViewerPaginated(
+    viewer: { role: "ADMIN" | "STAFF"; userId: string; email: string },
+    filters: IssueListFilters,
+    page: number,
+    pageSize: number
+  ): Promise<PaginatedIssueResult> {
+    const whereClauses: string[] = [];
+    const values: unknown[] = [];
+
+    if (viewer.role !== "ADMIN") {
+      whereClauses.push(
+        `(
+          i.reported_for_user_id = ?
+          OR EXISTS (
+            SELECT 1
+            FROM assignments a
+            JOIN staff s ON s.id = a.staff_id
+            WHERE a.asset_id = i.asset_id
+              AND a.returned_date IS NULL
+              AND s.email = ?
+          )
+        )`
+      );
+      values.push(viewer.userId, viewer.email);
+    }
+
+    if (filters.assignedToUserId) {
+      whereClauses.push(
+        `(i.reported_for_user_id = ? OR EXISTS (
+            SELECT 1
+            FROM assignments a_assign
+            WHERE a_assign.asset_id = i.asset_id
+              AND a_assign.receiver_user_id = ?
+          ))`
+      );
+      values.push(filters.assignedToUserId, filters.assignedToUserId);
+    }
+
+    if (filters.search) {
+      whereClauses.push(
+        `(
+          i.title LIKE ?
+          OR i.description LIKE ?
+          OR COALESCE(i.category, '') LIKE ?
+          OR COALESCE(l.asset_tag, '') LIKE ?
+          OR COALESCE(l.brand, '') LIKE ?
+          OR COALESCE(l.model, '') LIKE ?
+        )`
+      );
+      const pattern = `%${filters.search}%`;
+      values.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+
+    if (filters.status) {
+      whereClauses.push(`i.status = ?`);
+      values.push(toDbStatus(filters.status));
+    }
+
+    if (filters.priority) {
+      whereClauses.push(`i.priority = ?`);
+      values.push(toDbPriority(filters.priority));
+    }
+
+    const whereSQL = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const safePageSize = Math.max(1, Math.min(100, Math.floor(pageSize)));
+    const safePage = Math.max(1, Math.floor(page));
+    const offset = (safePage - 1) * safePageSize;
+
+    const totalResult = await query(
+      `SELECT COUNT(*) AS total
+       FROM issues i
+       LEFT JOIN assets l ON l.id = i.asset_id
+       ${whereSQL}`,
+      values.length > 0 ? values : undefined
+    );
+    const total = Number((totalResult.rows as any[])[0]?.total || 0);
+
+    const result = await query(
+      `SELECT
+         i.id,
+         COALESCE(CAST(i.asset_id AS CHAR), i.laptop_id) as laptopId,
+         i.title,
+         i.description,
+         i.category,
+         i.status,
+         i.priority,
+         COALESCE(i.reported_by_user_id, i.reported_by) as reportedByUserId,
+         i.created_by_user_id as createdByUserId,
+         i.reported_for_staff_id as reportedForStaffId,
+         i.reported_for_user_id as reportedForUserId,
+         i.assigned_to as assignedTo,
+         i.resolution_notes as resolutionNotes,
+         i.created_at as createdAt,
+         i.updated_at as updatedAt,
+         l.asset_tag as laptopAssetTag,
+         l.brand as laptopBrand,
+         l.model as laptopModel,
+         l.serial_number as laptopSerialNumber,
+         u.id as reporterId,
+         u.full_name as reporterName,
+         u.email as reporterEmail,
+         s_reported_for.id as reportedForId,
+         s_reported_for.name as reportedForName,
+         s_reported_for.email as reportedForEmail
+       FROM issues i
+       LEFT JOIN assets l ON l.id = i.asset_id
+       LEFT JOIN users u ON u.id = COALESCE(i.reported_by_user_id, i.reported_by)
+       LEFT JOIN staff s_reported_for ON s_reported_for.id = i.reported_for_staff_id
+       ${whereSQL}
+       ORDER BY i.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...values, safePageSize, offset]
+    );
+
+    return {
+      data: (result.rows as any[]).map((row) => this.mapRowWithRelations(row)),
+      page: safePage,
+      pageSize: safePageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+    };
   }
 
   static async findByIdForViewer(
@@ -187,12 +355,12 @@ export class IssueModel {
     if (viewer.role !== "ADMIN") {
       whereClauses.push(
         `(
-          COALESCE(i.reported_by_user_id, i.reported_by) = ?
+          i.reported_for_user_id = ?
           OR EXISTS (
             SELECT 1
             FROM assignments a
             JOIN staff s ON s.id = a.staff_id
-            WHERE a.laptop_id = i.laptop_id
+            WHERE a.asset_id = i.asset_id
               AND a.returned_date IS NULL
               AND LOWER(s.email) = LOWER(?)
           )
@@ -204,13 +372,16 @@ export class IssueModel {
     const result = await query(
       `SELECT
          i.id,
-         i.laptop_id as laptopId,
+         COALESCE(CAST(i.asset_id AS CHAR), i.laptop_id) as laptopId,
          i.title,
          i.description,
          i.category,
          i.status,
          i.priority,
          COALESCE(i.reported_by_user_id, i.reported_by) as reportedByUserId,
+         i.created_by_user_id as createdByUserId,
+         i.reported_for_staff_id as reportedForStaffId,
+         i.reported_for_user_id as reportedForUserId,
          i.assigned_to as assignedTo,
          i.resolution_notes as resolutionNotes,
          i.created_at as createdAt,
@@ -221,10 +392,14 @@ export class IssueModel {
          l.serial_number as laptopSerialNumber,
          u.id as reporterId,
          u.full_name as reporterName,
-         u.email as reporterEmail
+         u.email as reporterEmail,
+         s_reported_for.id as reportedForId,
+         s_reported_for.name as reportedForName,
+         s_reported_for.email as reportedForEmail
        FROM issues i
-       LEFT JOIN laptops l ON l.id = i.laptop_id
+       LEFT JOIN assets l ON l.id = i.asset_id
        LEFT JOIN users u ON u.id = COALESCE(i.reported_by_user_id, i.reported_by)
+       LEFT JOIN staff s_reported_for ON s_reported_for.id = i.reported_for_staff_id
        WHERE ${whereClauses.join(" AND ")}
        LIMIT 1`,
       values
@@ -277,8 +452,9 @@ export class IssueModel {
 
   static async findById(id: string): Promise<Issue | null> {
     const result = await query(
-      `SELECT id, laptop_id as laptopId, title, description, category, status, priority,
-              COALESCE(reported_by_user_id, reported_by) as reportedByUserId,
+      `SELECT id, asset_id as assetId, COALESCE(CAST(asset_id AS CHAR), laptop_id) as laptopId, title, description, category, status, priority,
+              COALESCE(reported_by_user_id, reported_by) as reportedByUserId, created_by_user_id as createdByUserId,
+              reported_for_staff_id as reportedForStaffId, reported_for_user_id as reportedForUserId,
               assigned_to as assignedTo, resolution_notes as resolutionNotes,
               created_at as createdAt, updated_at as updatedAt
        FROM issues WHERE id = ? LIMIT 1`,
@@ -292,12 +468,17 @@ export class IssueModel {
     return {
       id: row.id,
       laptopId: row.laptopId || row.laptop_id,
+      assetId: row.assetId || row.asset_id || undefined,
       title: row.title,
       description: row.description,
       category: row.category || "GENERAL",
       status: normalizeStatus(row.status),
       priority: normalizePriority(row.priority),
       reportedByUserId: row.reportedByUserId || row.reported_by_user_id || row.reported_by,
+      createdByUserId:
+        row.createdByUserId || row.created_by_user_id || row.reportedByUserId || row.reported_by_user_id || row.reported_by,
+      reportedForStaffId: row.reportedForStaffId || row.reported_for_staff_id || undefined,
+      reportedForUserId: row.reportedForUserId || row.reported_for_user_id || undefined,
       assignedTo: row.assignedTo || row.assigned_to || undefined,
       resolutionNotes: row.resolutionNotes || row.resolution_notes || undefined,
       createdAt: new Date(row.createdAt || row.created_at),
@@ -319,6 +500,13 @@ export class IssueModel {
         fullName: row.reporterName,
         email: row.reporterEmail,
       },
+      reportedFor: row.reportedForId
+        ? {
+            id: row.reportedForId,
+            name: row.reportedForName,
+            email: row.reportedForEmail,
+          }
+        : undefined,
     };
   }
 }

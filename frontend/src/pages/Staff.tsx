@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Search, MoreHorizontal, Eye, Edit, Mail, Phone } from "lucide-react";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { Plus, Search, MoreHorizontal, Eye, Edit, Mail, Phone, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,77 +24,93 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { apiClient, APIClientError } from "@/lib/apiClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/context/AuthContext";
 
 interface StaffRecord {
   id: string;
+  employeeName: string;
+  epfNo?: string;
+  epf_no?: string;
   name: string;
   email: string;
   department: string;
-  position: string;
-  joinDate: string;
+  location?: string;
+  status?: "ACTIVE" | "DISABLED";
   phoneNumber?: string;
 }
 
-interface AdminUserRecord {
-  id: string;
-  email: string;
-}
-
 const defaultForm = {
-  name: "",
+  employeeName: "",
+  epfNo: "",
   email: "",
   department: "",
-  position: "",
-  joinDate: "",
   phoneNumber: "",
+  status: "ACTIVE" as "ACTIVE" | "DISABLED",
 };
+
+const staffFormSchema = z.object({
+  employeeName: z.string().trim().min(2, "Employee Name is required"),
+  epfNo: z
+    .string()
+    .optional()
+    .transform((value) => (value || "").trim().toUpperCase()),
+  email: z.string().trim().email("Enter a valid email").or(z.literal("")),
+  department: z.string().trim().optional(),
+  phoneNumber: z.string().optional(),
+  status: z.enum(["ACTIVE", "DISABLED"]),
+});
+
+type StaffFormValues = z.infer<typeof staffFormSchema>;
 
 export default function Staff() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [staff, setStaff] = useState<StaffRecord[]>([]);
-  const [usersByEmail, setUsersByEmail] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addStaffOpen, setAddStaffOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState(defaultForm);
+  const [editingStaff, setEditingStaff] = useState<StaffRecord | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    reset,
+    watch,
+    formState: { errors, isDirty, isValid },
+  } = useForm<StaffFormValues>({
+    resolver: zodResolver(staffFormSchema),
+    defaultValues: defaultForm,
+    mode: "onChange",
+  });
+
+  const canSave = submitting ? false : editingStaff ? isDirty && isValid : isValid;
 
   const fetchStaff = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [staffResponse, usersResponse] = await Promise.all([
-        apiClient.get<StaffRecord[]>("/staff"),
-        apiClient.get<AdminUserRecord[]>("/auth/admin/users"),
-      ]);
+      const staffResponse = await apiClient.get<StaffRecord[]>("/staff");
 
       const list = Array.isArray(staffResponse)
         ? staffResponse
         : Array.isArray((staffResponse as { data?: unknown }).data)
           ? ((staffResponse as { data: StaffRecord[] }).data)
           : [];
-      const users = Array.isArray(usersResponse)
-        ? usersResponse
-        : Array.isArray((usersResponse as { data?: unknown }).data)
-          ? ((usersResponse as { data: AdminUserRecord[] }).data)
-          : [];
       setStaff(list);
-      const map: Record<string, string> = {};
-      users.forEach((u) => {
-        map[u.email.toLowerCase()] = u.id;
-      });
-      setUsersByEmail(map);
     } catch (err) {
       if (err instanceof APIClientError) {
         setError(err.message);
@@ -114,7 +133,8 @@ export default function Staff() {
 
   const filteredStaff = staff.filter((item) => {
     const matchesSearch =
-      item.name.toLowerCase().includes(search.toLowerCase()) ||
+      (item.employeeName || item.name).toLowerCase().includes(search.toLowerCase()) ||
+      (item.epfNo || "").toLowerCase().includes(search.toLowerCase()) ||
       item.email.toLowerCase().includes(search.toLowerCase()) ||
       item.department.toLowerCase().includes(search.toLowerCase());
     const matchesDepartment =
@@ -127,62 +147,96 @@ export default function Staff() {
     if (import.meta.env.DEV) {
       console.log("[Staff] Add Staff button clicked");
     }
+    setEditingStaff(null);
+    reset(defaultForm);
     setAddStaffOpen(true);
   };
 
-  const handleViewProfile = (staffId: string, email: string) => {
-    const userId = usersByEmail[email.toLowerCase()] || staffId;
-    if (import.meta.env.DEV) {
-      console.log(`[Staff] View Profile clicked for ${userId}`);
-    }
-    navigate(`/staff/${userId}`);
+  const handleOpenEditStaff = (item: StaffRecord) => {
+    setEditingStaff(item);
+    reset({
+      employeeName: item.employeeName || item.name,
+      epfNo: item.epfNo || item.epf_no || "",
+      email: item.email,
+      department: item.department,
+      phoneNumber: item.phoneNumber || "",
+      status: item.status || "ACTIVE",
+    });
+    setAddStaffOpen(true);
   };
 
-  const handleAddStaff = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (
-      !formData.name ||
-      !formData.email ||
-      !formData.department ||
-      !formData.position ||
-      !formData.joinDate
-    ) {
-      toast({
-        title: "Error",
-        description: "Please fill in all required fields",
-        variant: "destructive",
-      });
-      return;
+  const handleViewProfile = (staffId: string) => {
+    if (import.meta.env.DEV) {
+      console.log(`[Staff] View Profile clicked for ${staffId}`);
     }
+    navigate(`/staff/${staffId}`);
+  };
 
+  const handleAddStaff = async (formData: StaffFormValues) => {
     setSubmitting(true);
     try {
-      await apiClient.post("/staff", {
-        name: formData.name,
-        email: formData.email,
-        department: formData.department,
-        position: formData.position,
-        joinDate: new Date(formData.joinDate).toISOString(),
-        phoneNumber: formData.phoneNumber || undefined,
-      });
+      const payload = {
+        employee_name: formData.employeeName.trim(),
+        epf_no: formData.epfNo ? formData.epfNo.trim().toUpperCase() || null : null,
+        email: formData.email?.trim() || undefined,
+        department: formData.department?.trim() || undefined,
+        phone: formData.phoneNumber?.trim() || undefined,
+        status: formData.status,
+      };
+
+      if (editingStaff) {
+        await apiClient.put(`/staff/${editingStaff.id}`, payload);
+      } else {
+        await apiClient.post("/staff", payload);
+      }
 
       toast({
         title: "Success",
-        description: "Staff member added successfully",
+        description: editingStaff
+          ? "Staff member updated successfully"
+          : "Staff member added successfully",
       });
 
       setAddStaffOpen(false);
-      setFormData(defaultForm);
+      setEditingStaff(null);
+      reset(defaultForm);
       await fetchStaff();
     } catch (err) {
       toast({
         title: "Error",
-        description: err instanceof Error ? err.message : "Failed to add staff",
+        description:
+          err instanceof APIClientError && err.status === 409
+            ? "EPF No already exists"
+            : err instanceof APIClientError && err.status === 403
+              ? "Not authorized"
+              : err instanceof Error
+                ? err.message
+                : "Failed to add staff",
         variant: "destructive",
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteStaff = async (item: StaffRecord) => {
+    if (!isAdmin) return;
+    const confirmed = window.confirm(`Delete staff member ${item.name}?`);
+    if (!confirmed) return;
+
+    try {
+      await apiClient.delete(`/staff/${item.id}`);
+      toast({
+        title: "Deleted",
+        description: "Staff member deleted successfully",
+      });
+      await fetchStaff();
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: err instanceof Error ? err.message : "Failed to delete staff",
+        variant: "destructive",
+      });
     }
   };
 
@@ -193,7 +247,7 @@ export default function Staff() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Staff Directory</h1>
             <p className="text-muted-foreground">
-              Manage staff members and their laptop assignments
+              Manage personnel records and assigned assets.
             </p>
           </div>
         </div>
@@ -211,7 +265,7 @@ export default function Staff() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Staff Directory</h1>
             <p className="text-muted-foreground">
-              Manage staff members and their laptop assignments
+              Manage personnel records and assigned assets.
             </p>
           </div>
         </div>
@@ -226,13 +280,30 @@ export default function Staff() {
     );
   }
 
+  if (!isAdmin) {
+    return (
+      <div className="rounded-xl border bg-card p-8 text-center">
+        <p className="text-lg font-semibold">Unauthorized</p>
+        <p className="text-sm text-muted-foreground">Only administrators can manage staff profiles.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Staff Directory</h1>
-        <p className="text-muted-foreground">
-          Manage staff members and their laptop assignments
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Staff Directory</h1>
+          <p className="text-muted-foreground">
+            Manage personnel records and assigned assets.
+          </p>
+        </div>
+        {isAdmin && (
+          <Button className="gap-2" onClick={handleOpenAddStaff}>
+            <Plus className="h-4 w-4" />
+            Add Staff
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-4 flex-wrap">
@@ -272,13 +343,15 @@ export default function Staff() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredStaff.map((item) => (
+        {filteredStaff.map((item) => {
+          const displayEpf = getDisplayEpf(item);
+          return (
           <div key={item.id} className="rounded-xl border bg-card p-6 card-hover animate-fade-in">
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-full gradient-primary flex items-center justify-center">
                   <span className="text-lg font-semibold text-primary-foreground">
-                    {item.name
+                    {(item.employeeName || item.name)
                       .split(" ")
                       .filter(Boolean)
                       .map((n) => n[0])
@@ -286,8 +359,10 @@ export default function Staff() {
                   </span>
                 </div>
                 <div>
-                  <h3 className="font-semibold">{item.name}</h3>
-                  <p className="text-sm text-muted-foreground">{item.position}</p>
+                  <h3 className="font-semibold">{item.employeeName || item.name}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    EPF: {displayEpf || "Not Set"}
+                  </p>
                 </div>
               </div>
 
@@ -300,19 +375,31 @@ export default function Staff() {
                   <DropdownMenuContent align="end" className="bg-popover">
                   <DropdownMenuItem
                     className="gap-2"
-                    onClick={() => handleViewProfile(item.id, item.email)}
+                    onClick={() => handleViewProfile(item.id)}
                   >
                     <Eye className="w-4 h-4" /> View Profile
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="gap-2">
-                    <Edit className="w-4 h-4" /> Edit
-                  </DropdownMenuItem>
+                  {isAdmin && (
+                    <DropdownMenuItem className="gap-2" onClick={() => handleOpenEditStaff(item)}>
+                      <Edit className="w-4 h-4" /> Edit
+                    </DropdownMenuItem>
+                  )}
+                  {isAdmin && (
+                    <DropdownMenuItem
+                      className="gap-2 text-destructive"
+                      onClick={() => handleDeleteStaff(item)}
+                    >
+                      <Trash2 className="w-4 h-4" /> Delete
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
 
             <div className="space-y-2 mb-4">
-              <Badge variant="default">active</Badge>
+              <Badge variant={(item.status || "ACTIVE") === "ACTIVE" ? "default" : "secondary"}>
+                {(item.status || "ACTIVE").toLowerCase()}
+              </Badge>
               <p className="text-sm font-medium">{item.department}</p>
             </div>
 
@@ -327,7 +414,7 @@ export default function Staff() {
               </div>
             </div>
           </div>
-        ))}
+        )})}
       </div>
 
       {filteredStaff.length === 0 && (
@@ -337,80 +424,127 @@ export default function Staff() {
       )}
 
       <Dialog open={addStaffOpen} onOpenChange={setAddStaffOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Add Staff</DialogTitle>
-            <DialogDescription>Create a new staff profile.</DialogDescription>
+        <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-4">
+            <DialogTitle>{editingStaff ? "Edit Staff Profile" : "Add Staff"}</DialogTitle>
+            <DialogDescription>
+              {editingStaff ? "Update staff profile details." : "Create a new staff profile."}
+            </DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleAddStaff} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="staff-name">Name *</Label>
-              <Input
-                id="staff-name"
-                value={formData.name}
-                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="staff-email">Email *</Label>
-              <Input
-                id="staff-email"
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="staff-department">Department *</Label>
-              <Input
-                id="staff-department"
-                value={formData.department}
-                onChange={(e) => setFormData((prev) => ({ ...prev, department: e.target.value }))}
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="staff-position">Position *</Label>
-              <Input
-                id="staff-position"
-                value={formData.position}
-                onChange={(e) => setFormData((prev) => ({ ...prev, position: e.target.value }))}
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="staff-join-date">Join Date *</Label>
-              <Input
-                id="staff-join-date"
-                type="date"
-                value={formData.joinDate}
-                onChange={(e) => setFormData((prev) => ({ ...prev, joinDate: e.target.value }))}
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="staff-phone">Phone</Label>
-              <Input
-                id="staff-phone"
-                value={formData.phoneNumber}
-                onChange={(e) => setFormData((prev) => ({ ...prev, phoneNumber: e.target.value }))}
-                disabled={submitting}
-              />
+          <form onSubmit={handleSubmit(handleAddStaff)} className="flex max-h-[85vh] flex-col">
+            <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+              <section className="space-y-4 rounded-lg border p-4">
+                <h3 className="text-sm font-medium">Basic Info</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="staff-employee-name">Employee Name *</Label>
+                    <Input id="staff-employee-name" className="h-10" disabled={submitting} {...register("employeeName")} />
+                    {errors.employeeName && <p className="text-xs text-destructive">{errors.employeeName.message}</p>}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="staff-epf-no">EPF No</Label>
+                    <Input
+                      id="staff-epf-no"
+                      className="h-10"
+                      disabled={submitting}
+                      placeholder="Optional"
+                      {...register("epfNo")}
+                    />
+                    {errors.epfNo && <p className="text-xs text-destructive">{errors.epfNo.message}</p>}
+                  </div>
+                </div>
+              </section>
+
+              <Separator />
+
+              <section className="space-y-4 rounded-lg border p-4">
+                <h3 className="text-sm font-medium">Employment Info</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="staff-email">Email</Label>
+                    <Input
+                      id="staff-email"
+                      type="email"
+                      className="h-10"
+                      disabled={submitting}
+                      {...register("email")}
+                    />
+                    {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+                    {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="staff-department">Department *</Label>
+                    <Input
+                      id="staff-department"
+                      className="h-10"
+                      disabled={submitting}
+                      {...register("department")}
+                    />
+                    {errors.department && (
+                      <p className="text-xs text-destructive">{errors.department.message}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <input type="hidden" {...register("status")} />
+                    <Select
+                      value={watch("status")}
+                      onValueChange={(value) =>
+                        setValue("status", value as "ACTIVE" | "DISABLED", { shouldDirty: true, shouldValidate: true })
+                      }
+                    >
+                      <SelectTrigger className="h-10">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ACTIVE">Active</SelectItem>
+                        <SelectItem value="DISABLED">Disabled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </section>
+
+              <Separator />
+
+              <section className="space-y-4 rounded-lg border p-4">
+                <h3 className="text-sm font-medium">Contact</h3>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="staff-phone">Phone</Label>
+                    <Input
+                      id="staff-phone"
+                      className="h-10"
+                      disabled={submitting}
+                      {...register("phoneNumber")}
+                    />
+                  </div>
+                </div>
+              </section>
             </div>
 
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setAddStaffOpen(false)} disabled={submitting}>
+            <div className="sticky bottom-0 flex items-center justify-between border-t bg-background/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/75">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAddStaffOpen(false)}
+                disabled={submitting}
+              >
                 Cancel
               </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? "Saving..." : "Add Staff"}
+              <Button type="submit" disabled={!canSave}>
+                {submitting ? "Saving..." : editingStaff ? "Save Changes" : "Add Staff"}
               </Button>
-            </DialogFooter>
+            </div>
           </form>
         </DialogContent>
       </Dialog>
     </div>
   );
 }
+  const getDisplayEpf = (item: StaffRecord) => {
+    const raw = (item.epfNo || item.epf_no || "").trim();
+    if (!raw) return null;
+    if (/^legacy-/i.test(raw)) return null;
+    return raw;
+  };

@@ -16,11 +16,11 @@ export class DashboardController {
 
   static async getAdminSummary(req: AuthRequest, res: Response) {
     try {
-      const totalResult = await query(`SELECT COUNT(*) as total FROM laptops`);
+      const totalResult = await query(`SELECT COUNT(*) as total FROM assets`);
       const totalLaptops = Number((totalResult.rows as any[])[0]?.total || 0);
 
       const assignedResult = await query(
-        `SELECT COUNT(DISTINCT a.laptop_id) as assigned
+        `SELECT COUNT(DISTINCT a.asset_id) as assigned
          FROM assignments a
          WHERE a.status IN ('ACTIVE', 'RETURN_REQUESTED', 'RETURN_REJECTED')`
       );
@@ -28,27 +28,15 @@ export class DashboardController {
 
       const underRepairResult = await query(
         `SELECT COUNT(*) as underRepair
-         FROM laptops
-         WHERE status = 'MAINTENANCE'`
+         FROM assets
+         WHERE status = 'IN_REPAIR'`
       );
       const underRepair = Number((underRepairResult.rows as any[])[0]?.underRepair || 0);
 
       const availableResult = await query(
         `SELECT COUNT(*) as available
-         FROM laptops l
-         WHERE
-           (
-             CASE
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM assignments a
-                 WHERE a.laptop_id = l.id
-                   AND a.status IN ('ACTIVE', 'RETURN_REQUESTED', 'RETURN_REJECTED')
-               ) THEN 'ASSIGNED'
-               WHEN l.status = 'ASSIGNED' THEN 'AVAILABLE'
-               ELSE l.status
-             END
-           ) = 'AVAILABLE'`
+         FROM assets
+         WHERE status = 'IN_STOCK'`
       );
       const available = Number((availableResult.rows as any[])[0]?.available || 0);
 
@@ -113,11 +101,11 @@ export class DashboardController {
              WHEN a.returned_date IS NULL THEN 'ASSIGNED'
              ELSE l.status
            END as status,
-           l.warranty_expiry as warrantyExpiry,
+           l.warranty_end_date as warrantyExpiry,
            l.id as laptopId,
            a.accessories_issued_json as accessoriesIssuedJson
          FROM assignments a
-         JOIN laptops l ON l.id = a.laptop_id
+         JOIN assets l ON l.id = a.asset_id
          WHERE a.receiver_user_id = ?
            AND a.status IN ('ACTIVE', 'RETURN_REQUESTED', 'RETURN_REJECTED')
          ORDER BY a.assigned_date DESC
@@ -130,17 +118,8 @@ export class DashboardController {
         `SELECT COUNT(*) as count
          FROM issues i
          WHERE i.status IN ('OPEN', 'IN_PROGRESS')
-           AND (
-             COALESCE(i.reported_by_user_id, i.reported_by) = ?
-             OR EXISTS (
-               SELECT 1
-               FROM assignments a
-               WHERE a.laptop_id = i.laptop_id
-                 AND a.receiver_user_id = ?
-                 AND a.status IN ('ACTIVE', 'RETURN_REQUESTED', 'RETURN_REJECTED')
-             )
-           )`,
-        [req.user.userId, req.user.userId]
+           AND COALESCE(i.reported_by_user_id, i.reported_by) = ?`,
+        [req.user.userId]
       );
       const myOpenIssuesCount = Number((openIssuesResult.rows as any[])[0]?.count || 0);
 
@@ -208,7 +187,7 @@ export class DashboardController {
             'created' as action,
             a.assigned_by as actorId,
             IFNULL(u.full_name, '') as actorName,
-            JSON_OBJECT('assignmentId', a.id, 'status', a.status, 'laptopId', a.laptop_id) as details,
+            JSON_OBJECT('assignmentId', a.id, 'status', a.status, 'assetId', a.asset_id) as details,
             a.created_at as createdAt
           FROM assignments a
           LEFT JOIN users u ON u.id = a.assigned_by
@@ -219,7 +198,7 @@ export class DashboardController {
             'accepted' as action,
             a.accepted_by_user_id as actorId,
             IFNULL(u_acc.full_name, '') as actorName,
-            JSON_OBJECT('assignmentId', a.id, 'status', a.status, 'laptopId', a.laptop_id) as details,
+            JSON_OBJECT('assignmentId', a.id, 'status', a.status, 'assetId', a.asset_id) as details,
             a.accepted_at as createdAt
           FROM assignments a
           LEFT JOIN users u_acc ON u_acc.id = a.accepted_by_user_id
@@ -231,7 +210,7 @@ export class DashboardController {
             'refused' as action,
             a.receiver_user_id as actorId,
             IFNULL(u_ref.full_name, '') as actorName,
-            JSON_OBJECT('assignmentId', a.id, 'reason', a.refused_reason, 'laptopId', a.laptop_id) as details,
+            JSON_OBJECT('assignmentId', a.id, 'reason', a.refused_reason, 'assetId', a.asset_id) as details,
             a.refused_at as createdAt
           FROM assignments a
           LEFT JOIN users u_ref ON u_ref.id = a.receiver_user_id
@@ -243,7 +222,7 @@ export class DashboardController {
             'return_requested' as action,
             a.return_requested_by_user_id as actorId,
             IFNULL(u_req.full_name, '') as actorName,
-            JSON_OBJECT('assignmentId', a.id, 'laptopId', a.laptop_id) as details,
+            JSON_OBJECT('assignmentId', a.id, 'assetId', a.asset_id) as details,
             a.return_requested_at as createdAt
           FROM assignments a
           LEFT JOIN users u_req ON u_req.id = a.return_requested_by_user_id
@@ -255,7 +234,7 @@ export class DashboardController {
             'return_approved' as action,
             a.return_approved_by_admin_id as actorId,
             IFNULL(u_appr.full_name, '') as actorName,
-            JSON_OBJECT('assignmentId', a.id, 'laptopId', a.laptop_id) as details,
+            JSON_OBJECT('assignmentId', a.id, 'assetId', a.asset_id) as details,
             a.return_approved_at as createdAt
           FROM assignments a
           LEFT JOIN users u_appr ON u_appr.id = a.return_approved_by_admin_id

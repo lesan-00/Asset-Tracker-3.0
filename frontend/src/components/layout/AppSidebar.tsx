@@ -1,6 +1,7 @@
 import { 
   LayoutDashboard, 
-  Laptop, 
+  Laptop,
+  Boxes,
   Users, 
   ArrowLeftRight, 
   AlertTriangle,
@@ -11,6 +12,7 @@ import {
 import { NavLink as RouterNavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { APP_NAME } from '@/constants/app';
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -19,15 +21,16 @@ interface AppSidebarProps {
 
 const navItems = [
   { title: 'Dashboard', url: '/dashboard', icon: LayoutDashboard },
-  { title: 'Laptops', url: '/laptops', icon: Laptop },
+  { title: 'Assets', url: '/assets', icon: Boxes },
   { title: 'Staff', url: '/staff', icon: Users },
   { title: 'Assignments', url: '/assignments', icon: ArrowLeftRight },
   { title: 'Issues', url: '/issues', icon: AlertTriangle },
   { title: 'Reports', url: '/reports', icon: FileText },
-];
+] as const;
 
 export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const location = useLocation();
+  const visibleNavItems = navItems;
 
   return (
     <aside 
@@ -43,7 +46,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center">
               <Laptop className="w-4 h-4 text-primary-foreground" />
             </div>
-            <span className="font-semibold text-sidebar-foreground">AssetTrack</span>
+            <span className="font-semibold text-sidebar-foreground">{APP_NAME}</span>
           </div>
         )}
         {collapsed && (
@@ -55,7 +58,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
       {/* Navigation */}
       <nav className="flex flex-col gap-1 p-3 flex-1">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const isActive =
             location.pathname === item.url ||
             (item.url === "/dashboard" && location.pathname.startsWith("/dashboard/"));

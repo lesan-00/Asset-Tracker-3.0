@@ -1,4 +1,5 @@
 import { query } from "../database/connection.js";
+import { ORGANIZATION_NAME } from "../config/system.js";
 
 export interface AppSettings {
   organizationName: string;
@@ -8,7 +9,7 @@ export interface AppSettings {
 const SETTINGS_ID = 1;
 
 const defaultSettings: AppSettings = {
-  organizationName: "Browns Plantations",
+  organizationName: ORGANIZATION_NAME,
   primaryDepartment: "IT Department",
 };
 
@@ -34,7 +35,7 @@ export class SettingModel {
 
       const row = rows[0];
       return {
-        organizationName: row.organization_name || defaultSettings.organizationName,
+        organizationName: ORGANIZATION_NAME,
         primaryDepartment: row.primary_department || defaultSettings.primaryDepartment,
       };
     } catch (error) {
@@ -46,16 +47,15 @@ export class SettingModel {
   /**
    * Save (upsert) application settings to the database.
    */
-  static async saveAppSettings(settings: AppSettings): Promise<AppSettings> {
+  static async saveAppSettings(settings: { primaryDepartment: string }): Promise<AppSettings> {
     try {
       await query(
         `INSERT INTO settings (id, organization_name, primary_department, updated_at)
          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
          ON DUPLICATE KEY UPDATE
-         organization_name = VALUES(organization_name),
          primary_department = VALUES(primary_department),
          updated_at = CURRENT_TIMESTAMP`,
-        [SETTINGS_ID, settings.organizationName, settings.primaryDepartment]
+        [SETTINGS_ID, ORGANIZATION_NAME, settings.primaryDepartment]
       );
 
       return this.getAppSettings();

@@ -9,8 +9,9 @@ export interface User {
   location: string;
   department: string;
   phoneNumber: string;
-  role: "ADMIN" | "STAFF";
+  role: "ADMIN";
   isActive: boolean;
+  mustChangePassword?: boolean;
   createdAt: string;
 }
 
@@ -19,7 +20,8 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
+  setUserProfile: (nextUser: User) => void;
   logout: () => void;
 }
 
@@ -52,6 +54,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (storedToken && storedUser) {
       try {
         const parsedUser = JSON.parse(storedUser) as User;
+        if (parsedUser?.role !== "ADMIN") {
+          clearAuth();
+          setIsLoading(false);
+          return;
+        }
         setToken(storedToken);
         setUser(parsedUser);
       } catch (error) {
@@ -84,6 +91,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     persistAuth(newToken, newUser);
+    return newUser as User;
+  };
+
+  const setUserProfile = (nextUser: User) => {
+    setUser(nextUser);
+    localStorage.setItem("user", JSON.stringify(nextUser));
   };
 
   const logout = () => {
@@ -98,6 +111,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isAuthenticated: !!token && !!user,
         isLoading,
         login,
+        setUserProfile,
         logout,
       }}
     >

@@ -16,6 +16,9 @@ export async function resetDatabase() {
     // Drop all tables
     const dropQueries = [
       "DROP TABLE IF EXISTS reports",
+      "DROP TABLE IF EXISTS notifications",
+      "DROP TABLE IF EXISTS asset_activity_logs",
+      "DROP TABLE IF EXISTS assets",
       "DROP TABLE IF EXISTS laptop_accessories",
       "DROP TABLE IF EXISTS accessories",
       "DROP TABLE IF EXISTS issues_history",
@@ -44,7 +47,7 @@ export async function resetDatabase() {
     // Re-enable foreign key checks
     await pool.query("SET FOREIGN_KEY_CHECKS=1");
 
-    // Import and run initialization (which will recreate tables and seed demo data)
+    // Import and run initialization (which recreates schema and ensures a primary admin account)
     const { initializeDatabase } = await import("./init.js");
     await initializeDatabase();
 

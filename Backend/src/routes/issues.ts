@@ -4,8 +4,8 @@ import { requireRole } from "../middleware/rbac.js";
 
 const router = Router();
 
-// All authenticated users can create issues
-router.post("/", IssueController.createIssue);
+// Admin-only create
+router.post("/", requireRole(["ADMIN"]), IssueController.createIssue);
 router.get("/", IssueController.getIssues);
 router.get("/:id", IssueController.getIssueById);
 

@@ -11,7 +11,7 @@ router.post("/logout", AuthController.logout);
 
 // Protected routes
 router.get("/me", authMiddleware, AuthController.getCurrentUser);
-router.patch("/update", authMiddleware, AuthController.updateUser);
+router.patch("/update", authMiddleware, roleMiddleware("ADMIN"), AuthController.updateUser);
 router.post("/change-password", authMiddleware, AuthController.changePassword);
 
 // Admin-only routes

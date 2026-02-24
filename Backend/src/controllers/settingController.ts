@@ -3,7 +3,6 @@ import { z } from "zod";
 import { SettingModel } from "../models/Setting.js";
 
 const AppSettingsSchema = z.object({
-  organizationName: z.string().min(1, "Organization name is required"),
   primaryDepartment: z.string().min(1, "Primary department is required"),
 });
 

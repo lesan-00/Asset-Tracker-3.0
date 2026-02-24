@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, AlertTriangle, CheckCircle } from "lucide-react";
+import { Plus, Search, AlertTriangle, CheckCircle, Check, ChevronsUpDown, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -9,6 +9,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -20,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { apiClient, APIClientError } from "@/lib/apiClient";
 import { useToast } from "@/hooks/use-toast";
@@ -31,12 +41,15 @@ type IssuePriority = "low" | "medium" | "high" | "critical";
 interface IssueRecord {
   id: string;
   laptopId: string;
+  assetId?: number;
   title: string;
   description: string;
   category: string;
   status: IssueStatus;
   priority: IssuePriority;
   reportedByUserId: string;
+  createdByUserId?: string;
+  reportedForUserId?: string;
   assignedTo?: string;
   resolutionNotes?: string;
   createdAt: string;
@@ -52,13 +65,27 @@ interface IssueRecord {
     fullName?: string;
     email?: string;
   };
+  reportedFor?: {
+    id: string;
+    fullName?: string;
+    email?: string;
+  };
 }
 
-interface LaptopRecord {
+interface AssetRecord {
   id: string;
   assetTag: string;
+  assetType?: string;
   brand: string;
   model: string;
+  location?: string;
+}
+
+interface StaffRecord {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
 }
 
 const priorityStyles: Record<IssuePriority, string> = {
@@ -80,8 +107,20 @@ const emptyCreateForm = {
   category: "",
   priority: "medium" as IssuePriority,
   description: "",
-  laptopId: "",
+  assetId: "",
+  reportedForStaffId: "",
 };
+
+const ISSUE_CATEGORIES = [
+  "HARDWARE",
+  "SOFTWARE",
+  "NETWORK",
+  "SECURITY",
+  "PERFORMANCE",
+  "ACCESSORIES",
+  "OTHER",
+] as const;
+const MIN_SEARCH_LENGTH = 2;
 
 export default function Issues() {
   const { user } = useAuth();
@@ -89,7 +128,20 @@ export default function Issues() {
   const { toast } = useToast();
 
   const [issues, setIssues] = useState<IssueRecord[]>([]);
-  const [laptops, setLaptops] = useState<LaptopRecord[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [assetSearchOpen, setAssetSearchOpen] = useState(false);
+  const [assetSearchQuery, setAssetSearchQuery] = useState("");
+  const [assetSearchResults, setAssetSearchResults] = useState<AssetRecord[]>([]);
+  const [assetSearchLoading, setAssetSearchLoading] = useState(false);
+  const [selectedAssetLabel, setSelectedAssetLabel] = useState("");
+  const [staffSearchOpen, setStaffSearchOpen] = useState(false);
+  const [staffSearchQuery, setStaffSearchQuery] = useState("");
+  const [staffSearchResults, setStaffSearchResults] = useState<StaffRecord[]>([]);
+  const [staffSearchLoading, setStaffSearchLoading] = useState(false);
+  const [selectedStaffLabel, setSelectedStaffLabel] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,6 +163,11 @@ export default function Issues() {
   const [adminStatus, setAdminStatus] = useState<IssueStatus>("open");
   const [adminAssignedTo, setAdminAssignedTo] = useState("");
   const [adminResolutionNotes, setAdminResolutionNotes] = useState("");
+  const createFormIsValid =
+    createForm.title.trim().length > 0 &&
+    createForm.category.trim().length > 0 &&
+    createForm.description.trim().length > 0 &&
+    createForm.assetId.trim().length > 0;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -140,11 +197,6 @@ export default function Issues() {
     return (response ?? null) as T | null;
   };
 
-  const fetchLaptops = async () => {
-    const response = await apiClient.get<LaptopRecord[]>("/laptops");
-    setLaptops(extractList<LaptopRecord>(response));
-  };
-
   const fetchIssues = async () => {
     setLoading(true);
     setError(null);
@@ -153,11 +205,17 @@ export default function Issues() {
     if (search) params.set("search", search);
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (priorityFilter !== "all") params.set("priority", priorityFilter);
+    if (!isAdmin && user?.id) params.set("assignedToUserId", user.id);
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
     const endpoint = params.toString() ? `/issues?${params.toString()}` : "/issues";
 
     try {
       const response = await apiClient.get<IssueRecord[]>(endpoint);
       setIssues(extractList<IssueRecord>(response));
+      setTotal(Number((response as any)?.total || 0));
+      setTotalPages(Number((response as any)?.totalPages || 1));
+      setPage(Number((response as any)?.page || page));
     } catch (err) {
       if (err instanceof APIClientError) {
         setError(err.message);
@@ -171,13 +229,82 @@ export default function Issues() {
   };
 
   useEffect(() => {
-    fetchLaptops().catch(() => {
-      // Keep page usable even if laptop list fails.
-    });
-  }, []);
+    if (!isAdmin && reportOpen) {
+      setReportOpen(false);
+    }
+  }, [isAdmin, reportOpen]);
+
+  useEffect(() => {
+    if (!isAdmin || !reportOpen) return;
+    const term = assetSearchQuery.trim();
+    if (term.length > 0 && term.length < MIN_SEARCH_LENGTH) {
+      setAssetSearchResults([]);
+      setAssetSearchLoading(false);
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setAssetSearchLoading(true);
+      try {
+        const suffix = term ? `?search=${encodeURIComponent(term)}&page=1&pageSize=20` : "?page=1&pageSize=20";
+        const response = await apiClient.get<Array<{
+          id: number;
+          assetTag: string;
+          assetType?: string;
+          brand: string;
+          model: string;
+          location?: string;
+        }>>(`/assets${suffix}`);
+        const rows = extractList<any>(response).map((item) => ({
+          id: String(item.id),
+          assetTag: item.assetTag,
+          assetType: item.assetType,
+          brand: item.brand,
+          model: item.model,
+          location: item.location,
+        }));
+        setAssetSearchResults(rows.slice(0, 20));
+      } catch {
+        setAssetSearchResults([]);
+      } finally {
+        setAssetSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [assetSearchQuery, isAdmin, reportOpen]);
+
+  useEffect(() => {
+    if (!isAdmin || !reportOpen) return;
+    const term = staffSearchQuery.trim();
+    if (term.length > 0 && term.length < MIN_SEARCH_LENGTH) {
+      setStaffSearchResults([]);
+      setStaffSearchLoading(false);
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setStaffSearchLoading(true);
+      try {
+        const suffix = term ? `?search=${encodeURIComponent(term)}` : "";
+        const response = await apiClient.get<StaffRecord[]>(`/staff${suffix}`);
+        setStaffSearchResults(extractList<StaffRecord>(response).slice(0, 20));
+      } catch {
+        setStaffSearchResults([]);
+      } finally {
+        setStaffSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [isAdmin, reportOpen, staffSearchQuery]);
 
   useEffect(() => {
     fetchIssues();
+  }, [isAdmin, priorityFilter, search, statusFilter, user?.id, page, pageSize]);
+
+  useEffect(() => {
+    setPage(1);
   }, [search, statusFilter, priorityFilter]);
 
   const openCount = useMemo(
@@ -191,10 +318,19 @@ export default function Issues() {
 
   const handleCreateIssue = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createForm.title || !createForm.category || !createForm.description || !createForm.laptopId) {
+    if (!isAdmin) {
+      toast({
+        title: "Forbidden",
+        description: "Only admins can report issues.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!createForm.title || !createForm.category || !createForm.description || !createForm.assetId) {
       toast({
         title: "Error",
-        description: "Title, category, laptop, and description are required",
+        description: "Title, category, asset, and description are required",
         variant: "destructive",
       });
       return;
@@ -206,7 +342,8 @@ export default function Issues() {
         title: createForm.title,
         category: createForm.category,
         description: createForm.description,
-        laptopId: createForm.laptopId,
+        assetId: createForm.assetId,
+        reportedForStaffId: createForm.reportedForStaffId || undefined,
         priority: createForm.priority,
       });
       toast({
@@ -214,12 +351,23 @@ export default function Issues() {
         description: "Issue reported successfully",
       });
       setCreateForm(emptyCreateForm);
+      setSelectedAssetLabel("");
+      setSelectedStaffLabel("");
+      setAssetSearchQuery("");
+      setStaffSearchQuery("");
+      setAssetSearchResults([]);
+      setStaffSearchResults([]);
       setReportOpen(false);
       await fetchIssues();
     } catch (err) {
       toast({
         title: "Error",
-        description: err instanceof Error ? err.message : "Failed to report issue",
+        description:
+          err instanceof APIClientError && err.status === 403
+            ? "Only admins can report issues."
+            : err instanceof Error
+              ? err.message
+              : "Failed to report issue",
         variant: "destructive",
       });
     } finally {
@@ -281,12 +429,14 @@ export default function Issues() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Issue Tracking</h1>
-          <p className="text-muted-foreground">Manage laptop issues, repairs, and incidents</p>
+          <p className="text-muted-foreground">Manage issue reporting, triage, and resolution workflows.</p>
         </div>
-        <Button className="gap-2" onClick={() => setReportOpen(true)}>
-          <Plus className="w-4 h-4" />
-          Report Issue
-        </Button>
+        {isAdmin && (
+          <Button className="gap-2" onClick={() => setReportOpen(true)}>
+            <Plus className="w-4 h-4" />
+            Report Issue
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-6">
@@ -403,93 +553,310 @@ export default function Issues() {
         </div>
       )}
 
+      {!loading && !error && issues.length > 0 && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>
+            Showing {issues.length} of {total} issues
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            >
+              Prev
+            </Button>
+            <span>
+              Page {page} of {Math.max(1, totalPages)}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+
       {!loading && !error && issues.length === 0 && (
         <div className="text-center py-12">
           <p className="text-muted-foreground">No issues found matching your criteria.</p>
         </div>
       )}
 
-      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
+      <Dialog
+        open={isAdmin ? reportOpen : false}
+        onOpenChange={(open) => {
+          setReportOpen(open);
+          if (!open) {
+            setAssetSearchOpen(false);
+            setStaffSearchOpen(false);
+            setAssetSearchQuery("");
+            setStaffSearchQuery("");
+            setAssetSearchResults([]);
+            setStaffSearchResults([]);
+            setSelectedAssetLabel("");
+            setSelectedStaffLabel("");
+            setCreateForm(emptyCreateForm);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-4">
             <DialogTitle>Report Issue</DialogTitle>
-            <DialogDescription>Create a new issue ticket.</DialogDescription>
+            <DialogDescription>Create a new issue ticket as admin.</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleCreateIssue} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="issue-title">Title *</Label>
-              <Input
-                id="issue-title"
-                value={createForm.title}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, title: e.target.value }))}
-                disabled={creating}
-              />
-            </div>
+          <form onSubmit={handleCreateIssue} className="flex max-h-[80vh] flex-col">
+            <ScrollArea className="flex-1 px-6 py-4">
+              <div className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="issue-title">Title *</Label>
+                  <Input
+                    id="issue-title"
+                    placeholder="Briefly summarize the issue"
+                    value={createForm.title}
+                    onChange={(e) => setCreateForm((prev) => ({ ...prev, title: e.target.value }))}
+                    disabled={creating}
+                  />
+                </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Category *</Label>
-                <Input
-                  value={createForm.category}
-                  onChange={(e) => setCreateForm((prev) => ({ ...prev, category: e.target.value }))}
-                  disabled={creating}
-                />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Category *</Label>
+                    <Input
+                      list="issue-categories"
+                      placeholder="Select or type category"
+                      value={createForm.category}
+                      onChange={(e) =>
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          category: e.target.value.toUpperCase(),
+                        }))
+                      }
+                      disabled={creating}
+                    />
+                    <datalist id="issue-categories">
+                      {ISSUE_CATEGORIES.map((item) => (
+                        <option key={item} value={item} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Priority *</Label>
+                    <Select
+                      value={createForm.priority}
+                      onValueChange={(value) =>
+                        setCreateForm((prev) => ({ ...prev, priority: value as IssuePriority }))
+                      }
+                    >
+                      <SelectTrigger className="bg-card">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-popover">
+                        <SelectItem value="critical">Critical</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Asset *</Label>
+                    <Popover open={assetSearchOpen} onOpenChange={setAssetSearchOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={assetSearchOpen}
+                          className="h-10 w-full justify-between bg-card font-normal"
+                        >
+                          {createForm.assetId
+                            ? selectedAssetLabel || "Selected asset"
+                            : "Search asset by tag, brand, or model..."}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                        <Command shouldFilter={false}>
+                          <CommandInput
+                            placeholder="Search asset by tag, brand, or model..."
+                            value={assetSearchQuery}
+                            onValueChange={setAssetSearchQuery}
+                          />
+                          <CommandList>
+                            {assetSearchLoading && (
+                              <CommandEmpty>
+                                <span className="inline-flex items-center gap-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Loading assets...
+                                </span>
+                              </CommandEmpty>
+                            )}
+                            {!assetSearchLoading &&
+                              assetSearchQuery.trim().length > 0 &&
+                              assetSearchQuery.trim().length < MIN_SEARCH_LENGTH && (
+                                <CommandEmpty>Type at least 2 characters to search</CommandEmpty>
+                              )}
+                            {!assetSearchLoading &&
+                              (assetSearchQuery.trim().length === 0 ||
+                                assetSearchQuery.trim().length >= MIN_SEARCH_LENGTH) &&
+                              assetSearchResults.length === 0 && <CommandEmpty>No assets found</CommandEmpty>}
+                            <CommandGroup>
+                              {assetSearchResults.map((asset) => {
+                                const label = `${asset.assetTag} | ${asset.brand} ${asset.model} | ${
+                                  asset.location || "N/A"
+                                }`;
+                                return (
+                                  <CommandItem
+                                    key={asset.id}
+                                    value={asset.id}
+                                    onSelect={() => {
+                                      setCreateForm((prev) => ({ ...prev, assetId: asset.id }));
+                                      setSelectedAssetLabel(label);
+                                      setAssetSearchOpen(false);
+                                    }}
+                                  >
+                                    <Check
+                                      className={cn(
+                                        "mr-2 h-4 w-4",
+                                        asset.id === createForm.assetId ? "opacity-100" : "opacity-0"
+                                      )}
+                                    />
+                                    <span className="truncate">{label}</span>
+                                  </CommandItem>
+                                );
+                              })}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Reported For (Optional)</Label>
+                    <Popover open={staffSearchOpen} onOpenChange={setStaffSearchOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={staffSearchOpen}
+                          className="h-10 w-full justify-between bg-card font-normal"
+                        >
+                          {createForm.reportedForStaffId
+                            ? selectedStaffLabel || "Selected staff"
+                            : "Search staff by name or email..."}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                        <Command shouldFilter={false}>
+                          <CommandInput
+                            placeholder="Search staff by name or email..."
+                            value={staffSearchQuery}
+                            onValueChange={setStaffSearchQuery}
+                          />
+                          <CommandList>
+                            {staffSearchLoading && (
+                              <CommandEmpty>
+                                <span className="inline-flex items-center gap-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Loading staff...
+                                </span>
+                              </CommandEmpty>
+                            )}
+                            {!staffSearchLoading &&
+                              staffSearchQuery.trim().length > 0 &&
+                              staffSearchQuery.trim().length < MIN_SEARCH_LENGTH && (
+                                <CommandEmpty>Type at least 2 characters to search</CommandEmpty>
+                              )}
+                            {!staffSearchLoading &&
+                              (staffSearchQuery.trim().length === 0 ||
+                                staffSearchQuery.trim().length >= MIN_SEARCH_LENGTH) &&
+                              staffSearchResults.length === 0 && <CommandEmpty>No staff found</CommandEmpty>}
+                            <CommandGroup>
+                              <CommandItem
+                                value="none"
+                                onSelect={() => {
+                                  setCreateForm((prev) => ({ ...prev, reportedForStaffId: "" }));
+                                  setSelectedStaffLabel("None");
+                                  setStaffSearchOpen(false);
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    !createForm.reportedForStaffId ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                None
+                              </CommandItem>
+                              {staffSearchResults.map((staff) => {
+                                const label = `${staff.name} | ${staff.department}`;
+                                return (
+                                  <CommandItem
+                                    key={staff.id}
+                                    value={staff.id}
+                                    onSelect={() => {
+                                      setCreateForm((prev) => ({ ...prev, reportedForStaffId: staff.id }));
+                                      setSelectedStaffLabel(label);
+                                      setStaffSearchOpen(false);
+                                    }}
+                                  >
+                                    <Check
+                                      className={cn(
+                                        "mr-2 h-4 w-4",
+                                        staff.id === createForm.reportedForStaffId ? "opacity-100" : "opacity-0"
+                                      )}
+                                    />
+                                    <span className="truncate">{label}</span>
+                                  </CommandItem>
+                                );
+                              })}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="issue-description">Description *</Label>
+                    <span className="text-xs text-muted-foreground">
+                      {createForm.description.trim().length} chars
+                    </span>
+                  </div>
+                  <Textarea
+                    id="issue-description"
+                    placeholder="Describe symptoms, impact, and when the issue started"
+                    value={createForm.description}
+                    onChange={(e) =>
+                      setCreateForm((prev) => ({ ...prev, description: e.target.value }))
+                    }
+                    rows={7}
+                    disabled={creating}
+                  />
+                </div>
               </div>
+            </ScrollArea>
 
-              <div className="space-y-2">
-                <Label>Priority *</Label>
-                <Select
-                  value={createForm.priority}
-                  onValueChange={(value) => setCreateForm((prev) => ({ ...prev, priority: value as IssuePriority }))}
-                >
-                  <SelectTrigger className="bg-card">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-popover">
-                    <SelectItem value="critical">Critical</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="low">Low</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Laptop *</Label>
-              <Select
-                value={createForm.laptopId}
-                onValueChange={(value) => setCreateForm((prev) => ({ ...prev, laptopId: value }))}
-              >
-                <SelectTrigger className="bg-card">
-                  <SelectValue placeholder="Select laptop" />
-                </SelectTrigger>
-                <SelectContent className="bg-popover">
-                  {laptops.map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.assetTag} - {l.brand} {l.model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="issue-description">Description *</Label>
-              <Textarea
-                id="issue-description"
-                value={createForm.description}
-                onChange={(e) => setCreateForm((prev) => ({ ...prev, description: e.target.value }))}
-                rows={5}
-                disabled={creating}
-              />
-            </div>
-
-            <DialogFooter>
+            <DialogFooter className="border-t px-6 py-4">
               <Button type="button" variant="outline" onClick={() => setReportOpen(false)} disabled={creating}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={creating}>
+              <Button type="submit" disabled={creating || !createFormIsValid}>
                 {creating ? "Submitting..." : "Submit Issue"}
               </Button>
             </DialogFooter>
@@ -536,7 +903,7 @@ export default function Issues() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                 <p>
-                  <span className="font-medium">Laptop:</span>{" "}
+                  <span className="font-medium">Asset:</span>{" "}
                   {selectedIssue.laptop?.assetTag || "N/A"} {selectedIssue.laptop?.brand || ""}{" "}
                   {selectedIssue.laptop?.model || ""}
                 </p>
@@ -555,6 +922,11 @@ export default function Issues() {
                 {selectedIssue.assignedTo && (
                   <p>
                     <span className="font-medium">Assigned To:</span> {selectedIssue.assignedTo}
+                  </p>
+                )}
+                {selectedIssue.reportedFor?.fullName && (
+                  <p>
+                    <span className="font-medium">Reported For:</span> {selectedIssue.reportedFor.fullName}
                   </p>
                 )}
               </div>

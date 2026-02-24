@@ -1,6 +1,7 @@
 import { query } from "../database/connection.js";
 import { Assignment } from "../types/index.js";
 import { v4 as uuidv4 } from "uuid";
+import { AssignmentTargetType } from "../constants/assignmentPolicies.js";
 
 export type AssignmentStatus =
   | "PENDING_ACCEPTANCE"
@@ -9,9 +10,19 @@ export type AssignmentStatus =
   | "RETURN_REQUESTED"
   | "RETURN_APPROVED"
   | "RETURN_REJECTED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "REVERTED";
 
 type AssignmentListItem = Assignment & {
+  asset: {
+    id: number;
+    assetTag?: string;
+    serialNumber: string;
+    brand: string;
+    model: string;
+    status: string;
+    assetType: string;
+  };
   laptop: {
     id: string;
     assetTag?: string;
@@ -35,13 +46,26 @@ type AssignmentListItem = Assignment & {
   };
 };
 
+export interface PaginatedAssignmentResult {
+  data: AssignmentListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 export class AssignmentModel {
   static async create(data: {
-    laptopId: string;
-    staffId: string;
+    assetId: number;
+    groupId?: string | null;
+    targetType: AssignmentTargetType;
+    staffId?: string;
+    location?: string;
+    department?: string;
     receiverUserId?: string | null;
     assignedBy: string;
     assignedDate: Date;
+    status?: AssignmentStatus;
     issueConditionJson?: string | null;
     accessoriesIssuedJson?: string | null;
     notes?: string;
@@ -49,17 +73,22 @@ export class AssignmentModel {
     const id = uuidv4();
     await query(
       `INSERT INTO assignments (
-        id, laptop_id, staff_id, receiver_user_id, assigned_date, assigned_by, status,
+        id, asset_id, group_id, target_type, staff_id, location, department, receiver_user_id, assigned_date, assigned_by, status,
         issue_condition_json, accessories_issued_json, notes
       )
-      VALUES (?, ?, ?, ?, ?, ?, 'PENDING_ACCEPTANCE', ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        data.laptopId,
-        data.staffId,
+        data.assetId,
+        data.groupId ?? null,
+        data.targetType,
+        data.staffId ?? null,
+        data.location ?? null,
+        data.department ?? null,
         data.receiverUserId ?? null,
         data.assignedDate,
         data.assignedBy,
+        data.status || "PENDING_ACCEPTANCE",
         data.issueConditionJson ?? null,
         data.accessoriesIssuedJson ?? null,
         data.notes || null,
@@ -88,8 +117,12 @@ export class AssignmentModel {
     const result = await query(
       `SELECT
          id,
-         laptop_id as laptopId,
+         asset_id as assetId,
+         group_id as groupId,
+         target_type as targetType,
          staff_id as staffId,
+         location,
+         department,
          receiver_user_id as receiverUserId,
          assigned_date as assignedDate,
          status,
@@ -106,6 +139,9 @@ export class AssignmentModel {
          return_approved_by_admin_id as returnApprovedByAdminId,
          return_rejected_at as returnRejectedAt,
          return_rejected_reason as returnRejectedReason,
+         reverted_at as revertedAt,
+         reverted_by_user_id as revertedByUserId,
+         revert_reason as revertReason,
          issue_condition_json as issueConditionJson,
          return_condition_json as returnConditionJson,
          accessories_issued_json as accessoriesIssuedJson,
@@ -126,8 +162,12 @@ export class AssignmentModel {
     const result = await query(
       `SELECT
          id,
-         laptop_id as laptopId,
+         asset_id as assetId,
+         group_id as groupId,
+         target_type as targetType,
          staff_id as staffId,
+         location,
+         department,
          receiver_user_id as receiverUserId,
          assigned_date as assignedDate,
          status,
@@ -144,6 +184,9 @@ export class AssignmentModel {
          return_approved_by_admin_id as returnApprovedByAdminId,
          return_rejected_at as returnRejectedAt,
          return_rejected_reason as returnRejectedReason,
+         reverted_at as revertedAt,
+         reverted_by_user_id as revertedByUserId,
+         revert_reason as revertReason,
          issue_condition_json as issueConditionJson,
          return_condition_json as returnConditionJson,
          accessories_issued_json as accessoriesIssuedJson,
@@ -180,8 +223,12 @@ export class AssignmentModel {
     const result = await query(
       `SELECT
          a.id,
-         a.laptop_id as laptopId,
+         a.asset_id as assetId,
+         a.group_id as groupId,
+         a.target_type as targetType,
          a.staff_id as staffId,
+         a.location,
+         a.department,
          a.receiver_user_id as receiverUserId,
          a.assigned_date as assignedDate,
          a.status,
@@ -198,6 +245,9 @@ export class AssignmentModel {
          a.return_approved_by_admin_id as returnApprovedByAdminId,
          a.return_rejected_at as returnRejectedAt,
          a.return_rejected_reason as returnRejectedReason,
+         a.reverted_at as revertedAt,
+         a.reverted_by_user_id as revertedByUserId,
+         a.revert_reason as revertReason,
          a.issue_condition_json as issueConditionJson,
          a.return_condition_json as returnConditionJson,
          a.accessories_issued_json as accessoriesIssuedJson,
@@ -206,12 +256,13 @@ export class AssignmentModel {
          a.notes,
          a.created_at as createdAt,
          a.updated_at as updatedAt,
-         l.id as laptop_id,
-         l.asset_tag as laptop_assetTag,
-         l.serial_number as laptop_serialNumber,
-         l.brand as laptop_brand,
-         l.model as laptop_model,
-         l.status as laptop_status,
+         ass.id as asset_id,
+         ass.asset_tag as asset_assetTag,
+         ass.serial_number as asset_serialNumber,
+         ass.brand as asset_brand,
+         ass.model as asset_model,
+         ass.status as asset_status,
+         ass.asset_type as asset_assetType,
          s.id as staff_id,
          s.name as staff_name,
          s.email as staff_email,
@@ -222,8 +273,8 @@ export class AssignmentModel {
          ru.email as receiver_email,
          ru.full_name as receiver_fullName
        FROM assignments a
-       JOIN laptops l ON l.id = a.laptop_id
-       JOIN staff s ON s.id = a.staff_id
+       JOIN assets ass ON ass.id = a.asset_id
+       LEFT JOIN staff s ON s.id = a.staff_id
        LEFT JOIN users ru ON ru.id = a.receiver_user_id
        ${whereClause}
        ORDER BY a.assigned_date DESC`,
@@ -232,20 +283,29 @@ export class AssignmentModel {
 
     return (result.rows as any[]).map((row) => ({
       ...this.mapRow(row),
+      asset: {
+        id: Number(row.asset_id),
+        assetTag: row.asset_assetTag || undefined,
+        serialNumber: row.asset_serialNumber,
+        brand: row.asset_brand,
+        model: row.asset_model,
+        status: row.asset_status,
+        assetType: row.asset_assetType,
+      },
       laptop: {
-        id: row.laptop_id,
-        assetTag: row.laptop_assetTag || undefined,
-        serialNumber: row.laptop_serialNumber,
-        brand: row.laptop_brand,
-        model: row.laptop_model,
-        status: row.laptop_status,
+        id: String(row.asset_id),
+        assetTag: row.asset_assetTag || undefined,
+        serialNumber: row.asset_serialNumber,
+        brand: row.asset_brand,
+        model: row.asset_model,
+        status: row.asset_status,
       },
       staff: {
-        id: row.staff_id,
-        name: row.staff_name,
-        email: row.staff_email,
-        department: row.staff_department,
-        position: row.staff_position,
+        id: row.staff_id || "",
+        name: row.staff_name || "",
+        email: row.staff_email || "",
+        department: row.staff_department || "",
+        position: row.staff_position || "",
         phoneNumber: row.staff_phoneNumber || undefined,
       },
       receiver: row.receiver_id
@@ -258,15 +318,165 @@ export class AssignmentModel {
     }));
   }
 
-  static async findConflictingForLaptop(
-    laptopId: string,
+  static async findAllWithDetailsPaginated(
+    options: {
+      receiverUserId?: string;
+      status?: AssignmentStatus;
+      search?: string;
+    },
+    page: number,
+    pageSize: number
+  ): Promise<PaginatedAssignmentResult> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+
+    if (options?.receiverUserId) {
+      where.push("a.receiver_user_id = ?");
+      values.push(options.receiverUserId);
+    }
+    if (options?.status) {
+      where.push("a.status = ?");
+      values.push(options.status);
+    }
+    if (options?.search) {
+      where.push(
+        `(ass.asset_tag LIKE ? OR ass.model LIKE ? OR ass.brand LIKE ? OR COALESCE(s.name, '') LIKE ? OR COALESCE(s.email, '') LIKE ? OR COALESCE(a.location, '') LIKE ? OR COALESCE(a.department, '') LIKE ?)`
+      );
+      const pattern = `%${options.search}%`;
+      values.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const safePageSize = Math.max(1, Math.min(100, Math.floor(pageSize)));
+    const safePage = Math.max(1, Math.floor(page));
+    const offset = (safePage - 1) * safePageSize;
+
+    const totalResult = await query(
+      `SELECT COUNT(*) as total
+       FROM assignments a
+       JOIN assets ass ON ass.id = a.asset_id
+       LEFT JOIN staff s ON s.id = a.staff_id
+       ${whereClause}`,
+      values.length > 0 ? values : undefined
+    );
+    const total = Number((totalResult.rows as any[])[0]?.total || 0);
+
+    const result = await query(
+      `SELECT
+         a.id,
+         a.asset_id as assetId,
+         a.group_id as groupId,
+         a.target_type as targetType,
+         a.staff_id as staffId,
+         a.location,
+         a.department,
+         a.receiver_user_id as receiverUserId,
+         a.assigned_date as assignedDate,
+         a.status,
+         a.terms_version as termsVersion,
+         a.terms_accepted as termsAccepted,
+         a.terms_accepted_at as termsAcceptedAt,
+         a.accepted_by_user_id as acceptedByUserId,
+         a.accepted_at as acceptedAt,
+         a.refused_at as refusedAt,
+         a.refused_reason as refusedReason,
+         a.return_requested_at as returnRequestedAt,
+         a.return_requested_by_user_id as returnRequestedByUserId,
+         a.return_approved_at as returnApprovedAt,
+         a.return_approved_by_admin_id as returnApprovedByAdminId,
+         a.return_rejected_at as returnRejectedAt,
+         a.return_rejected_reason as returnRejectedReason,
+         a.reverted_at as revertedAt,
+         a.reverted_by_user_id as revertedByUserId,
+         a.revert_reason as revertReason,
+         a.issue_condition_json as issueConditionJson,
+         a.return_condition_json as returnConditionJson,
+         a.accessories_issued_json as accessoriesIssuedJson,
+         a.accessories_returned_json as accessoriesReturnedJson,
+         a.returned_date as returnedDate,
+         a.notes,
+         a.created_at as createdAt,
+         a.updated_at as updatedAt,
+         ass.id as asset_id,
+         ass.asset_tag as asset_assetTag,
+         ass.serial_number as asset_serialNumber,
+         ass.brand as asset_brand,
+         ass.model as asset_model,
+         ass.status as asset_status,
+         ass.asset_type as asset_assetType,
+         s.id as staff_id,
+         s.name as staff_name,
+         s.email as staff_email,
+         s.department as staff_department,
+         s.position as staff_position,
+         s.phone_number as staff_phoneNumber,
+         ru.id as receiver_id,
+         ru.email as receiver_email,
+         ru.full_name as receiver_fullName
+       FROM assignments a
+       JOIN assets ass ON ass.id = a.asset_id
+       LEFT JOIN staff s ON s.id = a.staff_id
+       LEFT JOIN users ru ON ru.id = a.receiver_user_id
+       ${whereClause}
+       ORDER BY a.assigned_date DESC
+       LIMIT ? OFFSET ?`,
+      [...values, safePageSize, offset]
+    );
+
+    const data = (result.rows as any[]).map((row) => ({
+      ...this.mapRow(row),
+      asset: {
+        id: Number(row.asset_id),
+        assetTag: row.asset_assetTag || undefined,
+        serialNumber: row.asset_serialNumber,
+        brand: row.asset_brand,
+        model: row.asset_model,
+        status: row.asset_status,
+        assetType: row.asset_assetType,
+      },
+      laptop: {
+        id: String(row.asset_id),
+        assetTag: row.asset_assetTag || undefined,
+        serialNumber: row.asset_serialNumber,
+        brand: row.asset_brand,
+        model: row.asset_model,
+        status: row.asset_status,
+      },
+      staff: {
+        id: row.staff_id || "",
+        name: row.staff_name || "",
+        email: row.staff_email || "",
+        department: row.staff_department || "",
+        position: row.staff_position || "",
+        phoneNumber: row.staff_phoneNumber || undefined,
+      },
+      receiver: row.receiver_id
+        ? {
+            id: row.receiver_id,
+            email: row.receiver_email,
+            fullName: row.receiver_fullName,
+          }
+        : undefined,
+    }));
+
+    return {
+      data,
+      page: safePage,
+      pageSize: safePageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+    };
+  }
+
+  static async findConflictingForAsset(
+    assetId: number,
     statuses: AssignmentStatus[],
     excludeAssignmentId?: string
   ): Promise<Assignment | null> {
     if (statuses.length === 0) return null;
 
     const placeholders = statuses.map(() => "?").join(", ");
-    const values: unknown[] = [laptopId, ...statuses];
+    const values: unknown[] = [assetId, ...statuses];
     let excludeClause = "";
     if (excludeAssignmentId) {
       excludeClause = "AND id <> ?";
@@ -276,7 +486,7 @@ export class AssignmentModel {
     const result = await query(
       `SELECT id
        FROM assignments
-       WHERE laptop_id = ?
+       WHERE asset_id = ?
          AND status IN (${placeholders})
          ${excludeClause}
        ORDER BY assigned_date DESC
@@ -289,12 +499,12 @@ export class AssignmentModel {
     return this.findById(rows[0].id);
   }
 
-  static async hasAssignedStateForLaptop(
-    laptopId: string,
+  static async hasAssignedStateForAsset(
+    assetId: number,
     excludeAssignmentId?: string
   ): Promise<boolean> {
     const statuses: AssignmentStatus[] = ["ACTIVE", "RETURN_REQUESTED", "RETURN_REJECTED"];
-    const found = await this.findConflictingForLaptop(laptopId, statuses, excludeAssignmentId);
+    const found = await this.findConflictingForAsset(assetId, statuses, excludeAssignmentId);
     return Boolean(found);
   }
 
@@ -315,6 +525,9 @@ export class AssignmentModel {
       returnApprovedByAdminId: string;
       returnRejectedAt: Date;
       returnRejectedReason: string;
+      revertedAt: Date;
+      revertedByUserId: string;
+      revertReason: string;
       issueConditionJson: string;
       returnConditionJson: string;
       accessoriesIssuedJson: string;
@@ -351,6 +564,11 @@ export class AssignmentModel {
     if (data.returnRejectedReason !== undefined) {
       setValue("return_rejected_reason", data.returnRejectedReason);
     }
+    if (data.revertedAt !== undefined) setValue("reverted_at", data.revertedAt);
+    if (data.revertedByUserId !== undefined) {
+      setValue("reverted_by_user_id", data.revertedByUserId);
+    }
+    if (data.revertReason !== undefined) setValue("revert_reason", data.revertReason);
     if (data.issueConditionJson !== undefined) setValue("issue_condition_json", data.issueConditionJson);
     if (data.returnConditionJson !== undefined) setValue("return_condition_json", data.returnConditionJson);
     if (data.accessoriesIssuedJson !== undefined) {
@@ -404,10 +622,16 @@ export class AssignmentModel {
   }
 
   private static mapRow(row: any): Assignment {
+    const mappedAssetId = Number(row.assetId || row.asset_id || 0);
     return {
       id: row.id,
-      laptopId: row.laptopId || row.laptop_id,
-      staffId: row.staffId || row.staff_id,
+      assetId: mappedAssetId,
+      groupId: row.groupId || row.group_id || undefined,
+      targetType: (row.targetType || row.target_type || "STAFF") as Assignment["targetType"],
+      laptopId: String(mappedAssetId),
+      staffId: row.staffId || row.staff_id || undefined,
+      location: row.location || undefined,
+      department: row.department || undefined,
       receiverUserId: row.receiverUserId || row.receiver_user_id || undefined,
       assignedDate: new Date(row.assignedDate || row.assigned_date),
       status: row.status,
@@ -447,6 +671,12 @@ export class AssignmentModel {
           ? new Date(row.returnRejectedAt || row.return_rejected_at)
           : undefined,
       returnRejectedReason: row.returnRejectedReason || row.return_rejected_reason || undefined,
+      revertedAt:
+        row.revertedAt || row.reverted_at
+          ? new Date(row.revertedAt || row.reverted_at)
+          : undefined,
+      revertedByUserId: row.revertedByUserId || row.reverted_by_user_id || undefined,
+      revertReason: row.revertReason || row.revert_reason || undefined,
       issueConditionJson: row.issueConditionJson || row.issue_condition_json || undefined,
       returnConditionJson: row.returnConditionJson || row.return_condition_json || undefined,
       accessoriesIssuedJson:

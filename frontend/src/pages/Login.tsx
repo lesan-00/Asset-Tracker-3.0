@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/context/AuthContext";
+import { APP_NAME } from "@/constants/app";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -39,15 +40,18 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await login(formData.email, formData.password);
+      const loggedInUser = await login(formData.email, formData.password);
 
       toast({
         title: "Success",
         description: "Welcome back!",
       });
 
-      // Redirect to dashboard
-      navigate("/");
+      if (loggedInUser.mustChangePassword) {
+        navigate("/change-password");
+      } else {
+        navigate("/");
+      }
     } catch (error) {
       toast({
         title: "Error",
@@ -59,15 +63,11 @@ export default function Login() {
     }
   };
 
-  const handleRegister = () => {
-    navigate("/register");
-  };
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-2">
-          <CardTitle className="text-2xl">Asset Buddy</CardTitle>
+          <CardTitle className="text-2xl">{APP_NAME}</CardTitle>
           <CardDescription>Sign in to manage your IT assets</CardDescription>
         </CardHeader>
         <CardContent>
@@ -106,24 +106,6 @@ export default function Login() {
               {loading ? "Signing in..." : "Sign In"}
             </Button>
 
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t" />
-              </div>
-              <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-white px-2 text-gray-500">Don't have an account?</span>
-              </div>
-            </div>
-
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={handleRegister}
-              disabled={loading}
-            >
-              Create Account
-            </Button>
           </form>
 
         </CardContent>

@@ -1,25 +1,23 @@
 import { Request, Response } from "express";
 import { UserModel } from "../models/User.js";
-import { StaffModel } from "../models/Staff.js";
 import { generateToken, AuthRequest } from "../middleware/auth.js";
 import { z } from "zod";
+import crypto from "crypto";
 
 const LoginSchema = z.object({
   email: z.string().email("Invalid email"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
-const RegisterSchema = z.object({
-  email: z.string().email("Invalid email"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
-  fullName: z.string().min(2, "Full name required"),
-  userCode: z.string().min(1, "User code is required"),
-  username: z.string().min(1, "Username is required"),
-  location: z.string().min(1, "Location is required"),
-  department: z.string().min(1, "Department is required"),
-  phoneNumber: z.string().min(1, "Phone number is required"),
-  role: z.enum(["ADMIN", "STAFF"]).optional(),
-});
+const AdminResetPasswordSchema = z
+  .object({
+    tempPassword: z.string().min(8).optional(),
+    generate: z.boolean().optional(),
+  })
+  .refine(
+    (value) => Boolean(value.generate) || Boolean(value.tempPassword),
+    "Provide tempPassword or set generate=true"
+  );
 
 export class AuthController {
   static async login(req: Request, res: Response) {
@@ -44,6 +42,12 @@ export class AuthController {
           error: "Invalid email or password",
         });
       }
+      if (user.role !== "ADMIN") {
+        return res.status(403).json({
+          success: false,
+          error: "Access restricted to administrators",
+        });
+      }
 
       const token = generateToken({
         userId: user.id,
@@ -51,19 +55,18 @@ export class AuthController {
         role: user.role,
       });
 
+      await UserModel.updateLastLogin(user.id);
+      const refreshedUser = await UserModel.findById(user.id);
+      if (!refreshedUser) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
       // Return the user without querying again, just format it
       const userPublic = {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        userCode: user.userCode,
-        username: user.username,
-        location: user.location,
-        department: user.department,
-        phoneNumber: user.phoneNumber,
-        role: user.role,
-        isActive: user.isActive,
-        createdAt: user.createdAt,
+        ...refreshedUser,
       };
 
       res.json({
@@ -88,86 +91,10 @@ export class AuthController {
   }
 
   static async register(req: Request, res: Response) {
-    try {
-      const validated = RegisterSchema.parse(req.body);
-
-      // Check if email already exists
-      const existing = await UserModel.findByEmail(validated.email);
-      if (existing) {
-        return res.status(400).json({
-          success: false,
-          error: "Email already registered",
-        });
-      }
-
-      const existingUserCode = await UserModel.findByUserCode(validated.userCode);
-      if (existingUserCode) {
-        return res.status(400).json({
-          success: false,
-          error: "User code already in use",
-        });
-      }
-
-      const existingUsername = await UserModel.findByUsername(validated.username);
-      if (existingUsername) {
-        return res.status(400).json({
-          success: false,
-          error: "Username already in use",
-        });
-      }
-
-      const user = await UserModel.create({
-        email: validated.email,
-        password: validated.password,
-        fullName: validated.fullName,
-        userCode: validated.userCode,
-        username: validated.username,
-        location: validated.location,
-        department: validated.department,
-        phoneNumber: validated.phoneNumber,
-        role: validated.role,
-      });
-
-      // Keep staff directory in sync with account registration.
-      if (user.role === "STAFF") {
-        const existingStaff = await StaffModel.findByEmail(user.email);
-        if (!existingStaff) {
-          await StaffModel.create({
-            name: user.fullName,
-            email: user.email,
-            department: user.department,
-            position: "Staff",
-            joinDate: new Date(),
-            phoneNumber: user.phoneNumber,
-          });
-        }
-      }
-
-      const token = generateToken({
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-      });
-
-      res.status(201).json({
-        success: true,
-        data: {
-          user,
-          token,
-        },
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({
-          success: false,
-          error: error.errors[0].message,
-        });
-      }
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : "Registration failed",
-      });
-    }
+    return res.status(403).json({
+      success: false,
+      error: "Registration is disabled. Access is restricted to administrators.",
+    });
   }
 
   static async getCurrentUser(req: AuthRequest, res: Response) {
@@ -180,6 +107,12 @@ export class AuthController {
       }
 
       const user = await UserModel.findById(req.user.userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
       res.json({
         success: true,
         data: user,
@@ -269,10 +202,12 @@ export class AuthController {
       }
 
       await UserModel.updatePassword(req.user.userId, validated.newPassword);
+      const updated = await UserModel.findById(req.user.userId);
 
       res.json({
         success: true,
         message: "Password changed successfully",
+        data: updated,
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -369,6 +304,71 @@ export class AuthController {
     }
   }
 
+  static async adminResetPassword(req: AuthRequest, res: Response) {
+    try {
+      if (!req.user?.userId) {
+        return res.status(401).json({
+          success: false,
+          error: "Not authenticated",
+        });
+      }
+
+      const { id } = req.params;
+      const validated = AdminResetPasswordSchema.parse(req.body ?? {});
+      const targetUser = await UserModel.findById(id);
+      if (!targetUser) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
+
+      if (targetUser.id === req.user.userId) {
+        return res.status(400).json({
+          success: false,
+          error: "Use change-password for your own account",
+        });
+      }
+
+      const tempPassword =
+        validated.generate || !validated.tempPassword
+          ? generateTemporaryPassword()
+          : validated.tempPassword;
+
+      await UserModel.resetPasswordByAdmin(targetUser.id, tempPassword);
+      await UserModel.logPasswordReset({
+        adminUserId: req.user.userId,
+        targetUserId: targetUser.id,
+        message: `Admin reset password for user ${targetUser.email}`,
+      });
+
+      if (validated.generate || !validated.tempPassword) {
+        return res.json({
+          success: true,
+          data: {
+            userId: targetUser.id,
+            tempPassword,
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: error.errors[0]?.message || "Invalid input",
+        });
+      }
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to reset password",
+      });
+    }
+  }
+
   static async getUserById(req: AuthRequest, res: Response) {
     try {
       if (!req.user) {
@@ -408,5 +408,9 @@ export class AuthController {
       });
     }
   }
+}
+
+function generateTemporaryPassword(): string {
+  return crypto.randomBytes(9).toString("base64url");
 }
 

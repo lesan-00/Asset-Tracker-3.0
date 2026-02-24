@@ -23,22 +23,39 @@ export const CreateLaptopSchema = z.object({
 export const UpdateLaptopSchema = CreateLaptopSchema.partial();
 
 export const CreateStaffSchema = z.object({
-  name: z.string().min(1),
-  email: z.string().email(),
-  department: z.string().min(1),
-  position: z.string().min(1),
-  joinDate: z.string().datetime(),
-  phoneNumber: z.string().optional(),
+  employeeName: z.string().trim().min(2),
+  epfNo: z
+    .preprocess(
+      (value) => (typeof value === "string" ? value.trim() : value),
+      z.string().optional().nullable()
+    )
+    .transform((value) => {
+      const normalized = (value || "").trim().toUpperCase();
+      return normalized.length > 0 ? normalized : null;
+    }),
+  email: z.string().trim().email().optional(),
+  department: z.string().trim().optional(),
+  location: z.string().trim().optional(),
+  phoneNumber: z.string().trim().optional(),
+  status: z.enum(["ACTIVE", "DISABLED", "INACTIVE"]).default("ACTIVE"),
+  position: z.string().trim().optional(),
+  joinDate: z.string().datetime().optional(),
 });
 
 export const UpdateStaffSchema = CreateStaffSchema.partial();
 
 export const CreateAssignmentSchema = z.object({
-  laptopId: z.string().uuid(),
-  staffId: z.string().uuid(),
-  assignedDate: z.string().datetime(),
+  assetId: z.coerce.number().int().positive().optional(),
+  laptopId: z.string().optional(),
+  staffId: z.string().uuid().optional(),
+  targetType: z.enum(["STAFF", "LOCATION", "DEPARTMENT"]).optional(),
+  location: z.string().min(1).optional(),
+  department: z.string().min(1).optional(),
+  issueDate: z.string().datetime().optional(),
+  assignedDate: z.string().datetime().optional(),
   issueCondition: z.record(z.any()).optional(),
   accessoriesIssued: z.array(z.string()).optional(),
+  bundleAssetIds: z.array(z.coerce.number().int().positive()).optional(),
   notes: z.string().optional(),
 });
 
@@ -55,6 +72,7 @@ export const AssignmentStatusSchema = z.enum([
   "RETURN_APPROVED",
   "RETURN_REJECTED",
   "CANCELLED",
+  "REVERTED",
 ]);
 
 export const AcceptAssignmentSchema = z.object({
@@ -76,15 +94,22 @@ export const AdminApproveReturnSchema = z.object({
   finalReturnCondition: z.record(z.any()),
   finalAccessoriesReturned: z.array(z.string()),
   decisionNote: z.string().max(500).optional(),
-  nextLaptopStatus: z.enum(["AVAILABLE", "UNDER_REPAIR"]),
+  nextLaptopStatus: z.enum(["IN_STOCK", "IN_REPAIR"]),
 });
 
 export const AdminRejectReturnSchema = z.object({
   reason: z.string().min(1).max(255),
 });
 
+export const RevertAssignmentSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
+
 export const CreateIssueSchema = z.object({
-  laptopId: z.string().uuid(),
+  assetId: z
+    .union([z.string().min(1), z.coerce.number().int().positive()])
+    .transform((value) => String(value)),
+  reportedForStaffId: z.string().uuid().optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   category: z.string().min(1),
@@ -97,6 +122,39 @@ export const UpdateIssueSchema = z.object({
   assignedTo: z.string().min(1).max(255).optional(),
   resolutionNotes: z.string().max(2000).optional(),
 });
+
+export const AssetTypeSchema = z.enum([
+  "LAPTOP",
+  "PRINTER",
+  "SWITCH",
+  "ROUTER",
+  "DESKTOP",
+  "MOBILE_PHONE",
+  "SYSTEM_UNIT",
+  "MONITOR",
+  "KEYBOARD",
+  "MOUSE",
+  "HEADSET",
+]);
+export const AssetStatusSchema = z.enum(["IN_STOCK", "ASSIGNED", "IN_REPAIR", "RETIRED"]);
+
+export const CreateAssetSchema = z.object({
+  assetTag: z.string().min(1),
+  assetType: AssetTypeSchema,
+  brand: z.string().min(1),
+  model: z.string().min(1),
+  imeiNo: z.string().optional(),
+  serialNumber: z.string().optional(),
+  specifications: z.string().optional(),
+  department: z.string().optional(),
+  status: AssetStatusSchema.default("IN_STOCK"),
+  location: z.string().min(1),
+  purchaseDate: z.string().optional(),
+  warrantyEndDate: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const UpdateAssetSchema = CreateAssetSchema.partial();
 
 export const RegisterSchema = z.object({
   email: z.string().email(),
@@ -122,5 +180,7 @@ export type CreateAssignment = z.infer<typeof CreateAssignmentSchema>;
 export type UpdateAssignment = z.infer<typeof UpdateAssignmentSchema>;
 export type CreateIssue = z.infer<typeof CreateIssueSchema>;
 export type UpdateIssue = z.infer<typeof UpdateIssueSchema>;
+export type CreateAsset = z.infer<typeof CreateAssetSchema>;
+export type UpdateAsset = z.infer<typeof UpdateAssetSchema>;
 export type Register = z.infer<typeof RegisterSchema>;
 export type Login = z.infer<typeof LoginSchema>;

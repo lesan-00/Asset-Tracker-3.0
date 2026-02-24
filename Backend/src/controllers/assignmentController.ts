@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { z } from "zod";
 import { AssignmentModel } from "../models/Assignment.js";
 import {
   AcceptAssignmentSchema,
@@ -6,13 +7,40 @@ import {
   AdminRejectReturnSchema,
   CreateAssignmentSchema,
   RefuseAssignmentSchema,
+  RevertAssignmentSchema,
   RequestReturnSchema,
 } from "../types/schemas.js";
-import { LaptopModel } from "../models/Laptop.js";
+import { AssetModel } from "../models/Asset.js";
 import { AuthRequest } from "../middleware/auth.js";
+import { NotificationService } from "../services/notificationService.js";
+import {
+  AssignmentTargetType,
+  isAccessoriesAllowedType,
+} from "../constants/assignmentPolicies.js";
+import { AssignmentService } from "../services/assignmentService.js";
+import { getConnection } from "../database/connection.js";
+import { v4 as uuidv4 } from "uuid";
 
 const APPEND_NOTE_SEPARATOR = " | ";
 const REQUIRED_TERMS_COUNT = 5;
+
+const ListAssignmentsQuerySchema = z.object({
+  status: z
+    .enum([
+      "PENDING_ACCEPTANCE",
+      "ACTIVE",
+      "REFUSED",
+      "RETURN_REQUESTED",
+      "RETURN_APPROVED",
+      "RETURN_REJECTED",
+      "CANCELLED",
+      "REVERTED",
+    ])
+    .optional(),
+  search: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+});
 
 export class AssignmentController {
   static async createAssignment(req: AuthRequest, res: Response) {
@@ -25,62 +53,234 @@ export class AssignmentController {
       }
 
       const validated = CreateAssignmentSchema.parse(req.body);
-      const receiverUserId = await AssignmentModel.findReceiverUserIdForStaff(validated.staffId);
-      if (!receiverUserId) {
+      const targetType: AssignmentTargetType = validated.targetType || "STAFF";
+      const requestedBundleAssetIds = Array.from(
+        new Set((validated.bundleAssetIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))
+      );
+      const parsedAssetId =
+        validated.assetId ??
+        (validated.laptopId && Number.isFinite(Number(validated.laptopId))
+          ? Number(validated.laptopId)
+          : undefined);
+
+      if (!parsedAssetId || !Number.isInteger(parsedAssetId) || parsedAssetId <= 0) {
         return res.status(400).json({
           success: false,
-          error: "Selected receiver does not have a linked user account",
+          error: "Asset id is required",
         });
       }
 
-      const laptop = await LaptopModel.findById(validated.laptopId);
-      if (!laptop) {
+      const asset = await AssetModel.findById(parsedAssetId);
+      if (!asset) {
         return res.status(404).json({
           success: false,
-          error: "Laptop not found",
+          error: "Asset not found",
         });
       }
-      if (laptop.status !== "AVAILABLE") {
+      const assetStatus = String((asset as any).status || "").toUpperCase();
+      if (assetStatus !== "IN_STOCK") {
         return res.status(400).json({
           success: false,
-          error: "Laptop is not available for assignment",
+          error: "Asset is not available for assignment",
         });
       }
 
-      const conflict = await AssignmentModel.findConflictingForLaptop(validated.laptopId, [
+      let staffId: string | undefined;
+      let location: string | undefined;
+      let department: string | undefined;
+
+      if (targetType === "STAFF") {
+        if (!validated.staffId) {
+          return res.status(400).json({
+            success: false,
+            error: "staffId is required when targetType is STAFF",
+          });
+        }
+        staffId = validated.staffId;
+      } else if (targetType === "LOCATION") {
+        const normalizedLocation = normalizeSpacing(validated.location || "");
+        if (!normalizedLocation) {
+          return res.status(400).json({
+            success: false,
+            error: "location is required when targetType is LOCATION",
+          });
+        }
+        if (normalizedLocation.length < 2) {
+          return res.status(400).json({
+            success: false,
+            error: "location must be at least 2 characters",
+          });
+        }
+        location = normalizedLocation;
+      } else if (targetType === "DEPARTMENT") {
+        const normalizedDepartment = normalizeSpacing(validated.department || "");
+        if (!normalizedDepartment) {
+          return res.status(400).json({
+            success: false,
+            error: "department is required when targetType is DEPARTMENT",
+          });
+        }
+        if (normalizedDepartment.length < 2) {
+          return res.status(400).json({
+            success: false,
+            error: "department must be at least 2 characters",
+          });
+        }
+        department = normalizedDepartment;
+      }
+
+      if (validated.accessoriesIssued?.length && !isAccessoriesAllowedType(asset.assetType)) {
+        return res.status(400).json({
+          success: false,
+          error: `Accessories are not allowed for asset type ${asset.assetType}`,
+        });
+      }
+
+      if (
+        requestedBundleAssetIds.length > 0 &&
+        (targetType !== "STAFF" || !["DESKTOP", "SYSTEM_UNIT"].includes(asset.assetType))
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Bundle items are only supported for STAFF desktop assignments",
+        });
+      }
+
+      const bundleAssetIds = requestedBundleAssetIds.filter((id) => id !== parsedAssetId);
+      const groupId = bundleAssetIds.length > 0 ? uuidv4() : null;
+
+      const assignmentIds: string[] = [];
+      const assignedDate = validated.issueDate
+        ? new Date(validated.issueDate)
+        : validated.assignedDate
+          ? new Date(validated.assignedDate)
+          : new Date();
+      const assignmentStatus = "ACTIVE";
+      const conflictStatuses = [
         "PENDING_ACCEPTANCE",
         "ACTIVE",
         "RETURN_REQUESTED",
         "RETURN_REJECTED",
-      ]);
-      if (conflict) {
-        return res.status(409).json({
+      ];
+
+      const connection = await getConnection();
+      try {
+        await connection.beginTransaction();
+
+        const assetIdsToAssign = [parsedAssetId, ...bundleAssetIds];
+        for (const assetId of assetIdsToAssign) {
+          const [assetRows] = await connection.execute(
+            `SELECT id, asset_type as assetType, status
+             FROM assets
+             WHERE id = ?
+             FOR UPDATE`,
+            [assetId]
+          );
+          const currentAsset = Array.isArray(assetRows) ? (assetRows as any[])[0] : null;
+          if (!currentAsset) {
+            throw new Error(`Asset ${assetId} not found`);
+          }
+          const currentAssetStatus = String(currentAsset.status || "").toUpperCase();
+          if (currentAssetStatus !== "IN_STOCK") {
+            throw new Error(`Asset ${assetId} is not available for assignment`);
+          }
+
+          const [conflictRows] = await connection.execute(
+            `SELECT id
+             FROM assignments
+             WHERE asset_id = ?
+               AND status IN (?, ?, ?, ?)
+             LIMIT 1
+             FOR UPDATE`,
+            [assetId, ...conflictStatuses]
+          );
+          const hasConflict = Array.isArray(conflictRows) && (conflictRows as any[]).length > 0;
+          if (hasConflict) {
+            throw new Error(`Asset ${assetId} already has an open assignment`);
+          }
+
+          if (assetId !== parsedAssetId) {
+            const assetType = String(currentAsset.assetType || "").toUpperCase();
+            if (!["MONITOR", "KEYBOARD", "MOUSE"].includes(assetType)) {
+              throw new Error(`Asset ${assetId} cannot be used as a bundle item`);
+            }
+          }
+        }
+
+        for (let index = 0; index < assetIdsToAssign.length; index += 1) {
+          const currentAssetId = assetIdsToAssign[index];
+          const assignmentId = uuidv4();
+          assignmentIds.push(assignmentId);
+
+          await connection.execute(
+            `INSERT INTO assignments (
+              id,
+              asset_id,
+              group_id,
+              target_type,
+              staff_id,
+              location,
+              department,
+              receiver_user_id,
+              assigned_date,
+              assigned_by,
+              status,
+              issue_condition_json,
+              accessories_issued_json,
+              notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              assignmentId,
+              currentAssetId,
+              groupId,
+              targetType,
+              staffId ?? null,
+              location ?? null,
+              department ?? null,
+              null,
+              assignedDate,
+              req.user.userId,
+              assignmentStatus,
+              index === 0 && validated.issueCondition ? JSON.stringify(validated.issueCondition) : null,
+              index === 0 && validated.accessoriesIssued
+                ? JSON.stringify(validated.accessoriesIssued)
+                : null,
+              validated.notes ?? null,
+            ]
+          );
+        }
+
+        const placeholders = assetIdsToAssign.map(() => "?").join(", ");
+        await connection.execute(
+          `UPDATE assets
+           SET status = 'ASSIGNED', updated_at = CURRENT_TIMESTAMP
+           WHERE id IN (${placeholders})`,
+          assetIdsToAssign
+        );
+
+        await connection.commit();
+      } catch (transactionError) {
+        await connection.rollback();
+        throw transactionError;
+      } finally {
+        connection.release();
+      }
+
+      const assignment = await AssignmentModel.findById(assignmentIds[0]);
+      if (!assignment) {
+        return res.status(500).json({
           success: false,
-          error: "Laptop already has an open assignment",
+          error: "Failed to create assignment",
         });
       }
 
-      const assignment = await AssignmentModel.create({
-        laptopId: validated.laptopId,
-        staffId: validated.staffId,
-        receiverUserId,
-        assignedBy: req.user.userId,
-        assignedDate: new Date(validated.assignedDate),
-        issueConditionJson: validated.issueCondition
-          ? JSON.stringify(validated.issueCondition)
-          : null,
-        accessoriesIssuedJson: validated.accessoriesIssued
-          ? JSON.stringify(validated.accessoriesIssued)
-          : null,
-        notes: validated.notes,
-      });
-
-      res.status(201).json({
+      return res.status(201).json({
         success: true,
         data: assignment,
       });
     } catch (error) {
-      res.status(400).json({
+      const statusCode = Number((error as any)?.statusCode || 400);
+      return res.status(statusCode).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -96,22 +296,41 @@ export class AssignmentController {
         });
       }
 
-      let assignments;
-      if (req.user.role === "ADMIN") {
-        assignments = await AssignmentModel.findAllWithDetails();
-      } else {
-        await AssignmentModel.backfillReceiverUserIdByEmail(req.user.userId, req.user.email);
-        assignments = await AssignmentModel.findAllWithDetails({
-          receiverUserId: req.user.userId,
+      if (req.user.role !== "ADMIN") {
+        return res.status(403).json({
+          success: false,
+          error: "Access restricted to administrators",
         });
       }
 
-      res.json({
+      const parsed = ListAssignmentsQuerySchema.parse(req.query);
+      const assignmentsPaged = await AssignmentModel.findAllWithDetailsPaginated(
+        {
+          status: parsed.status,
+          search: parsed.search,
+        },
+        parsed.page,
+        parsed.pageSize
+      );
+
+      const groupedAssignments = groupAssignmentsForResponse(assignmentsPaged.data);
+
+      return res.json({
         success: true,
-        data: assignments,
+        data: groupedAssignments,
+        page: assignmentsPaged.page,
+        pageSize: assignmentsPaged.pageSize,
+        total: assignmentsPaged.total,
+        totalPages: assignmentsPaged.totalPages,
       });
     } catch (error) {
-      res.status(500).json({
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: error.errors[0]?.message || "Invalid query",
+        });
+      }
+      return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : "Server error",
       });
@@ -136,22 +355,19 @@ export class AssignmentController {
         });
       }
 
-      if (
-        req.user.role !== "ADMIN" &&
-        assignment.receiverUserId !== req.user.userId
-      ) {
+      if (req.user.role !== "ADMIN") {
         return res.status(403).json({
           success: false,
-          error: "Access denied",
+          error: "Access restricted to administrators",
         });
       }
 
-      res.json({
+      return res.json({
         success: true,
         data: assignment,
       });
     } catch (error) {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : "Server error",
       });
@@ -189,6 +405,12 @@ export class AssignmentController {
           error: "Only pending assignments can be accepted",
         });
       }
+      if (assignment.targetType !== "STAFF") {
+        return res.status(400).json({
+          success: false,
+          error: "Only STAFF assignments can be accepted",
+        });
+      }
       if (!validated.acceptedTerms.every((item) => item === true)) {
         return res.status(400).json({
           success: false,
@@ -203,15 +425,15 @@ export class AssignmentController {
       }
 
       const now = new Date();
-      const activeConflict = await AssignmentModel.findConflictingForLaptop(
-        assignment.laptopId,
+      const activeConflict = await AssignmentModel.findConflictingForAsset(
+        assignment.assetId,
         ["ACTIVE", "RETURN_REQUESTED", "RETURN_REJECTED"],
         assignment.id
       );
       if (activeConflict) {
         return res.status(409).json({
           success: false,
-          error: "Laptop already has an active assignment",
+          error: "Asset already has an active assignment",
         });
       }
 
@@ -224,14 +446,16 @@ export class AssignmentController {
         acceptedAt: now,
       });
 
-      await LaptopModel.update(assignment.laptopId, { status: "ASSIGNED" });
+      await AssetModel.update(assignment.assetId, { status: "ASSIGNED" });
+      await NotificationService.markAssignmentNotificationsAsRead(assignment.id);
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      const statusCode = Number((error as any)?.statusCode || 400);
+      return res.status(statusCode).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -269,6 +493,12 @@ export class AssignmentController {
           error: "Only pending assignments can be refused",
         });
       }
+      if (assignment.targetType !== "STAFF") {
+        return res.status(400).json({
+          success: false,
+          error: "Only STAFF assignments can be refused",
+        });
+      }
 
       const now = new Date();
       const updated = await AssignmentModel.updateById(id, {
@@ -277,14 +507,15 @@ export class AssignmentController {
         refusedReason: validated.reason || undefined,
       });
 
-      await syncLaptopStatusForAssignment(assignment.laptopId, assignment.id);
+      await syncAssetStatusForAssignment(assignment.assetId, assignment.id);
+      await NotificationService.markAssignmentNotificationsAsRead(assignment.id);
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -322,6 +553,12 @@ export class AssignmentController {
           error: "Only active or return-rejected assignments can request return",
         });
       }
+      if (assignment.targetType !== "STAFF") {
+        return res.status(400).json({
+          success: false,
+          error: "Return flow is only available for STAFF assignments",
+        });
+      }
 
       const now = new Date();
       const updated = await AssignmentModel.updateById(id, {
@@ -336,12 +573,12 @@ export class AssignmentController {
           : assignment.accessoriesReturnedJson || "",
       });
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -385,17 +622,16 @@ export class AssignmentController {
         notes: appendDecisionNote(assignment.notes, validated.decisionNote),
       });
 
-      await LaptopModel.update(assignment.laptopId, {
-        status:
-          validated.nextLaptopStatus === "AVAILABLE" ? "AVAILABLE" : "MAINTENANCE",
+      await AssetModel.update(assignment.assetId, {
+        status: validated.nextLaptopStatus,
       });
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -436,14 +672,14 @@ export class AssignmentController {
         notes: appendDecisionNote(assignment.notes, `Return rejected: ${validated.reason}`),
       });
 
-      await syncLaptopStatusForAssignment(assignment.laptopId, assignment.id);
+      await syncAssetStatusForAssignment(assignment.assetId, assignment.id);
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -470,14 +706,15 @@ export class AssignmentController {
       const updated = await AssignmentModel.updateById(id, {
         status: "CANCELLED",
       });
-      await syncLaptopStatusForAssignment(assignment.laptopId, assignment.id);
+      await syncAssetStatusForAssignment(assignment.assetId, assignment.id);
+      await NotificationService.markAssignmentNotificationsAsRead(assignment.id);
 
-      res.json({
+      return res.json({
         success: true,
         data: updated,
       });
     } catch (error) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : "Invalid input",
       });
@@ -487,21 +724,136 @@ export class AssignmentController {
   static async deleteAssignment(req: AuthRequest, res: Response) {
     try {
       const { id } = req.params;
-      const deleted = await AssignmentModel.delete(id);
-      if (!deleted) {
+      const connection = await getConnection();
+      let assignmentAssetId: number | null = null;
+      let assignmentFound = false;
+      try {
+        await connection.beginTransaction();
+        const selectSql = `
+          SELECT id, asset_id as assetId
+          FROM assignments
+          WHERE id = ?
+          FOR UPDATE
+        `;
+        const selectParams = [id];
+        const [rows] = await connection.execute(selectSql, selectParams);
+        const assignment = Array.isArray(rows) ? (rows as any[])[0] : null;
+
+        if (!assignment) {
+          await connection.rollback();
+          return res.status(404).json({
+            success: false,
+            error: "Assignment not found",
+          });
+        }
+        assignmentFound = true;
+
+        assignmentAssetId = assignment.assetId ? Number(assignment.assetId) : null;
+        if (assignmentAssetId && Number.isInteger(assignmentAssetId) && assignmentAssetId > 0) {
+          await connection.execute(
+            `SELECT id, status FROM assets WHERE id = ? FOR UPDATE`,
+            [assignmentAssetId]
+          );
+        }
+
+        await connection.execute(`DELETE FROM assignments WHERE id = ?`, [id]);
+
+        if (assignmentAssetId && Number.isInteger(assignmentAssetId) && assignmentAssetId > 0) {
+          const [activeRows] = await connection.execute(
+            `SELECT id
+             FROM assignments
+             WHERE asset_id = ?
+               AND status IN ('PENDING_ACCEPTANCE', 'ACTIVE', 'RETURN_REQUESTED', 'RETURN_REJECTED')
+             ORDER BY assigned_date DESC, created_at DESC
+             LIMIT 1`,
+            [assignmentAssetId]
+          );
+          const hasActive = Array.isArray(activeRows) && (activeRows as any[]).length > 0;
+          if (hasActive) {
+            await connection.execute(
+              `UPDATE assets
+               SET status = 'ASSIGNED', updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`,
+              [assignmentAssetId]
+            );
+          } else {
+            await connection.execute(
+              `UPDATE assets
+               SET status = CASE
+                 WHEN status IN ('IN_REPAIR', 'RETIRED') THEN status
+                 ELSE 'IN_STOCK'
+               END,
+               updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`,
+              [assignmentAssetId]
+            );
+          }
+        }
+
+        await connection.commit();
+      } catch (transactionError) {
+        await connection.rollback();
+        throw transactionError;
+      } finally {
+        connection.release();
+      }
+
+      if (!assignmentFound) {
         return res.status(404).json({
           success: false,
           error: "Assignment not found",
         });
       }
-      res.json({
+      return res.json({
         success: true,
         message: "Assignment deleted successfully",
       });
     } catch (error) {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : "Server error",
+      });
+    }
+  }
+
+  static async revertAssignment(req: AuthRequest, res: Response) {
+    try {
+      if (!req.user?.userId) {
+        return res.status(401).json({
+          success: false,
+          error: "User not authenticated",
+        });
+      }
+
+      const { id } = req.params;
+      const validated = RevertAssignmentSchema.parse(req.body ?? {});
+      const reverted = await AssignmentService.revertAssignment({
+        assignmentId: id,
+        adminUserId: req.user.userId,
+        adminEmail: req.user.email,
+        reason: validated.reason,
+      });
+
+      if (!reverted) {
+        return res.status(404).json({
+          success: false,
+          error: "Assignment not found",
+        });
+      }
+
+      await NotificationService.markAssignmentNotificationsAsRead(id);
+
+      return res.json({
+        success: true,
+        data: reverted.assignment,
+        message: reverted.alreadyFinalized
+          ? "Assignment was already finalized"
+          : "Assignment reverted successfully",
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Invalid input",
       });
     }
   }
@@ -517,13 +869,62 @@ function appendDecisionNote(existing: string | undefined, decisionNote?: string)
   return `${existing}${APPEND_NOTE_SEPARATOR}${decisionNote.trim()}`;
 }
 
-async function syncLaptopStatusForAssignment(laptopId: string, excludingAssignmentId?: string) {
-  const stillAssigned = await AssignmentModel.hasAssignedStateForLaptop(
-    laptopId,
+async function syncAssetStatusForAssignment(assetId: number, excludingAssignmentId?: string) {
+  const stillAssigned = await AssignmentModel.hasAssignedStateForAsset(
+    assetId,
     excludingAssignmentId
   );
 
-  await LaptopModel.update(laptopId, {
-    status: stillAssigned ? "ASSIGNED" : "AVAILABLE",
+  await AssetModel.update(assetId, {
+    status: stillAssigned ? "ASSIGNED" : "IN_STOCK",
   });
+}
+
+function groupAssignmentsForResponse(assignments: any[]) {
+  const grouped = new Map<string, any[]>();
+  const standalone: any[] = [];
+
+  for (const assignment of assignments) {
+    if (assignment.groupId) {
+      if (!grouped.has(assignment.groupId)) {
+        grouped.set(assignment.groupId, []);
+      }
+      grouped.get(assignment.groupId)!.push(assignment);
+    } else {
+      standalone.push({ ...assignment, bundleAssets: [] });
+    }
+  }
+
+  const groupedCards = Array.from(grouped.values()).map((items) => {
+    const primary =
+      items.find((item) =>
+        ["DESKTOP", "SYSTEM_UNIT"].includes(String(item?.asset?.assetType || "").toUpperCase())
+      ) || items[0];
+
+    const bundleAssets = items
+      .filter((item) => item.id !== primary.id)
+      .map((item) => ({
+        assignmentId: item.id,
+        assetId: item.assetId,
+        assetType: item.asset?.assetType,
+        assetTag: item.asset?.assetTag,
+        serialNumber: item.asset?.serialNumber,
+        brand: item.asset?.brand,
+        model: item.asset?.model,
+        status: item.status,
+      }));
+
+    return {
+      ...primary,
+      bundleAssets,
+    };
+  });
+
+  return [...groupedCards, ...standalone].sort(
+    (a, b) => new Date(b.assignedDate).getTime() - new Date(a.assignedDate).getTime()
+  );
+}
+
+function normalizeSpacing(value: string) {
+  return value.trim().replace(/\s+/g, " ");
 }

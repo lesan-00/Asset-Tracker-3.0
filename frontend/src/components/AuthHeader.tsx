@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiCall } from "@/lib/api";
+import { APP_NAME } from "@/constants/app";
 
 interface User {
   id: string;
@@ -44,7 +45,7 @@ export default function AuthHeader() {
   return (
     <div className="flex items-center justify-between p-4 bg-white border-b">
       <div className="flex items-center gap-4">
-        <h1 className="text-2xl font-bold">Asset Buddy</h1>
+        <h1 className="text-2xl font-bold">{APP_NAME}</h1>
       </div>
       <div className="flex items-center gap-4">
         <div className="text-sm">

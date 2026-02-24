@@ -79,7 +79,7 @@ export default function Dashboard() {
       {/* Page Header */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">Overview of your laptop asset inventory and assignments</p>
+        <p className="text-muted-foreground">Overview of asset inventory and operational status.</p>
       </div>
 
       {/* Stats Grid */}

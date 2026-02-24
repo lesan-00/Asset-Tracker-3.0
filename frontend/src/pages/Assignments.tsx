@@ -1,17 +1,31 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
-import { Calendar, Plus, Search } from "lucide-react";
+import { Calendar, Eye, MoreHorizontal, Plus, Search, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { apiClient, APIClientError } from "@/lib/apiClient";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/context/AuthContext";
-import { TermsModal } from "@/components/assignments/TermsModal";
-import { RefuseModal } from "@/components/assignments/RefuseModal";
-import { ReturnRequestModal } from "@/components/assignments/ReturnRequestModal";
+import { assignmentsApi } from "@/lib/assignmentsApi";
 import { ApproveReturnModal } from "@/components/assignments/ApproveReturnModal";
 import { RejectReturnModal } from "@/components/assignments/RejectReturnModal";
 import { NewAssignmentModal } from "@/components/assignments/NewAssignmentModal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 type AssignmentStatus =
   | "PENDING_ACCEPTANCE"
@@ -20,16 +34,20 @@ type AssignmentStatus =
   | "RETURN_REQUESTED"
   | "RETURN_APPROVED"
   | "RETURN_REJECTED"
-  | "CANCELLED";
-type NextLaptopStatus = "AVAILABLE" | "UNDER_REPAIR";
+  | "CANCELLED"
+  | "REVERTED";
+type NextLaptopStatus = "IN_STOCK" | "IN_REPAIR";
 
-interface Laptop {
-  id: string;
+interface AssetOption {
+  id: number;
+  assetType: string;
   assetTag?: string;
   serialNumber: string;
   brand: string;
   model: string;
   status: string;
+  location?: string | null;
+  department?: string | null;
 }
 
 interface Staff {
@@ -49,36 +67,52 @@ interface Accessory {
 
 interface Assignment {
   id: string;
-  laptopId: string;
-  staffId: string;
+  assetId: number;
+  groupId?: string;
+  laptopId?: string;
+  targetType?: "STAFF" | "LOCATION" | "DEPARTMENT";
+  location?: string;
+  department?: string;
+  staffId?: string;
   status: AssignmentStatus;
   assignedDate: string;
   refusedReason?: string;
   returnRejectedReason?: string;
+  revertedAt?: string;
+  revertReason?: string;
   accessoriesIssuedJson?: string;
   notes?: string;
-  laptop: Laptop;
+  bundleAssets?: Array<{
+    assignmentId: string;
+    assetId: number;
+    assetType?: string;
+    assetTag?: string;
+    serialNumber?: string;
+    brand?: string;
+    model?: string;
+    status?: string;
+  }>;
+  asset?: AssetOption;
+  laptop?: {
+    id: string;
+    assetTag?: string;
+    serialNumber: string;
+    brand: string;
+    model: string;
+    status: string;
+  };
   staff: Staff;
 }
 
-const TERMS_VERSION = "v1";
-const TERMS = [
-  "I am responsible for the replaceable value of the said equipment and accessories in the event of loss or damage due to negligence.",
-  "I will return the laptop and all issued accessories immediately when requested by the organization.",
-  "I will not transfer the laptop to another user without IT/admin authorization.",
-  "I will report faults, loss, or theft immediately to IT/admin.",
-  "I will keep the device secure and comply with organization security policies.",
-] as const;
-
 export default function Assignments() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "ADMIN";
   const { toast } = useToast();
 
   const [search, setSearch] = useState("");
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [laptops, setLaptops] = useState<Laptop[]>([]);
-  const [staff, setStaff] = useState<Staff[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(25);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [accessories, setAccessories] = useState<Accessory[]>([]);
   const [accessoriesLoading, setAccessoriesLoading] = useState(false);
   const [accessoriesError, setAccessoriesError] = useState<string | null>(null);
@@ -88,26 +122,18 @@ export default function Assignments() {
   const [selected, setSelected] = useState<Assignment | null>(null);
 
   const [newOpen, setNewOpen] = useState(false);
-  const [acceptOpen, setAcceptOpen] = useState(false);
-  const [refuseOpen, setRefuseOpen] = useState(false);
-  const [requestOpen, setRequestOpen] = useState(false);
   const [approveOpen, setApproveOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
+  const [revertOpen, setRevertOpen] = useState(false);
 
-  const [acceptedTerms, setAcceptedTerms] = useState<boolean[]>(TERMS.map(() => false));
-  const [refuseReason, setRefuseReason] = useState("");
   const [rejectReason, setRejectReason] = useState("");
-
-  const [requestForm, setRequestForm] = useState({
-    condition: "",
-    accessories: "",
-  });
+  const [revertReason, setRevertReason] = useState("");
 
   const [approveForm, setApproveForm] = useState({
     condition: "",
     accessories: "",
     note: "",
-    nextLaptopStatus: "AVAILABLE" as NextLaptopStatus,
+    nextLaptopStatus: "IN_STOCK" as NextLaptopStatus,
   });
 
   const loadAccessories = async () => {
@@ -117,6 +143,12 @@ export default function Assignments() {
       const response = await apiClient.get<Accessory[]>("/accessories");
       setAccessories(Array.isArray((response as any).data) ? (response as any).data : []);
     } catch (e) {
+      const status = e instanceof APIClientError ? e.status : Number((e as any)?.status || 0);
+      if (status === 404) {
+        setAccessories([]);
+        setAccessoriesError(null);
+        return;
+      }
       const message = e instanceof Error ? e.message : "Failed to load accessories";
       setAccessoriesError(message);
       toast({
@@ -133,27 +165,15 @@ export default function Assignments() {
     setLoading(true);
     setError(null);
     try {
-      const requests = isAdmin
-        ? [
-            apiClient.get<Assignment[]>("/assignments"),
-            apiClient.get<Laptop[]>("/laptops"),
-            apiClient.get<Staff[]>("/staff"),
-          ]
-        : [
-            apiClient.get<Assignment[]>("/assignments"),
-            apiClient.get<Laptop[]>("/laptops"),
-          ];
-
-      const responses = await Promise.all(requests);
-      console.log("[Assignments] /assignments response:", responses[0]);
-      setAssignments(Array.isArray((responses[0] as any).data) ? (responses[0] as any).data : []);
-      setLaptops(Array.isArray((responses[1] as any).data) ? (responses[1] as any).data : []);
-
-      if (isAdmin) {
-        setStaff(Array.isArray((responses[2] as any).data) ? (responses[2] as any).data : []);
-      } else {
-        setStaff([]);
-      }
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      if (search.trim()) params.set("search", search.trim());
+      const response = await apiClient.get<Assignment[]>(`/assignments?${params.toString()}`);
+      setAssignments(Array.isArray((response as any).data) ? (response as any).data : []);
+      setTotal(Number((response as any).total || 0));
+      setTotalPages(Number((response as any).totalPages || 1));
+      setPage(Number((response as any).page || page));
     } catch (e) {
       setError(
         e instanceof APIClientError
@@ -163,8 +183,6 @@ export default function Assignments() {
             : "Failed to load assignments"
       );
       setAssignments([]);
-      setLaptops([]);
-      setStaff([]);
       setAccessories([]);
     } finally {
       setLoading(false);
@@ -173,26 +191,35 @@ export default function Assignments() {
 
   useEffect(() => {
     void loadData();
-  }, [isAdmin]);
+    void loadAccessories();
+  }, [page, pageSize, search]);
 
   useEffect(() => {
-    if (!isAdmin) return;
-    void loadAccessories();
-  }, [isAdmin]);
+    setPage(1);
+  }, [search]);
 
-  const filteredAssignments = useMemo(() => {
-    const term = search.toLowerCase();
-    return assignments.filter((assignment) =>
-      `${assignment.laptop?.assetTag || ""} ${assignment.laptop?.brand || ""} ${assignment.laptop?.model || ""} ${assignment.staff?.name || ""}`
-        .toLowerCase()
-        .includes(term)
-    );
-  }, [assignments, search]);
+  const filteredAssignments = useMemo(() => assignments, [assignments]);
 
-  const pendingAssignments = filteredAssignments.filter((item) => item.status === "PENDING_ACCEPTANCE");
+  const availableLocations = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of assignments) {
+      if (item.location?.trim()) set.add(item.location.trim());
+      if (item.asset?.location?.trim()) set.add(item.asset.location.trim());
+    }
+    return Array.from(set);
+  }, [assignments]);
+
+  const availableDepartments = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of assignments) {
+      if (item.department?.trim()) set.add(item.department.trim());
+      if (item.staff?.department?.trim()) set.add(item.staff.department.trim());
+      if (item.asset?.department?.trim()) set.add(item.asset.department.trim());
+    }
+    return Array.from(set);
+  }, [assignments]);
+
   const returnRequestedQueue = filteredAssignments.filter((item) => item.status === "RETURN_REQUESTED");
-  const availableLaptops = laptops.filter((item) => item.status === "AVAILABLE");
-  const canAccept = acceptedTerms.every(Boolean);
 
   const handlePost = async (
     key: string,
@@ -220,6 +247,33 @@ export default function Assignments() {
     }
   };
 
+  const handleRevertAssignment = async () => {
+    if (!selected) return;
+
+    setBusy(selected.id);
+    try {
+      const response = await assignmentsApi.revertAssignment<Assignment>(selected.id, {
+        reason: revertReason.trim() || undefined,
+      });
+      toast({
+        title: "Assignment reverted",
+        description: (response as any)?.message || "Asset returned to inventory.",
+      });
+      setRevertOpen(false);
+      setRevertReason("");
+      setSelected(null);
+      await loadData();
+    } catch (e) {
+      toast({
+        title: "Error",
+        description: e instanceof Error ? e.message : "Failed to revert assignment",
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (loading) {
     return <div className="rounded-xl border bg-card p-10 text-center">Loading assignments...</div>;
   }
@@ -240,14 +294,12 @@ export default function Assignments() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Assignments</h1>
-          <p className="text-muted-foreground">Issue, acceptance, and return approvals</p>
+          <p className="text-muted-foreground">Manage asset issuance and return workflows.</p>
         </div>
-        {isAdmin && (
-          <Button onClick={() => setNewOpen(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            New Assignment
-          </Button>
-        )}
+        <Button onClick={() => setNewOpen(true)} className="gap-2">
+          <Plus className="h-4 w-4" />
+          New Assignment
+        </Button>
       </div>
 
       <div className="relative">
@@ -256,59 +308,24 @@ export default function Assignments() {
           className="pl-10"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by laptop/staff"
+          placeholder="Search by asset/staff"
         />
       </div>
 
-      {!isAdmin && pendingAssignments.length > 0 && (
-        <Section title="Pending Assignments">
-          {pendingAssignments.map((assignment) => (
-            <AssignmentCard
-              key={`pending-${assignment.id}`}
-              assignment={assignment}
-              isAdmin={isAdmin}
-              busy={busy === assignment.id}
-              onAccept={() => {
-                setSelected(assignment);
-                setAcceptedTerms(TERMS.map(() => false));
-                setAcceptOpen(true);
-              }}
-              onRefuse={() => {
-                setSelected(assignment);
-                setRefuseReason("");
-                setRefuseOpen(true);
-              }}
-              onRequestReturn={() => {
-                setSelected(assignment);
-                setRequestForm({ condition: "", accessories: "" });
-                setRequestOpen(true);
-              }}
-              onApproveReturn={() => undefined}
-              onRejectReturn={() => undefined}
-              onCancelPending={() => undefined}
-            />
-          ))}
-        </Section>
-      )}
-
-      {isAdmin && returnRequestedQueue.length > 0 && (
+      {returnRequestedQueue.length > 0 && (
         <Section title="Return Requests Queue">
           {returnRequestedQueue.map((assignment) => (
             <AssignmentCard
               key={`queue-${assignment.id}`}
               assignment={assignment}
-              isAdmin={isAdmin}
               busy={busy === assignment.id}
-              onAccept={() => undefined}
-              onRefuse={() => undefined}
-              onRequestReturn={() => undefined}
               onApproveReturn={() => {
                 setSelected(assignment);
                 setApproveForm({
                   condition: "",
                   accessories: "",
                   note: "",
-                  nextLaptopStatus: "AVAILABLE",
+                  nextLaptopStatus: "IN_STOCK",
                 });
                 setApproveOpen(true);
               }}
@@ -318,12 +335,23 @@ export default function Assignments() {
                 setRejectOpen(true);
               }}
               onCancelPending={() => undefined}
+              onViewDetails={() => {
+                toast({
+                  title: "Assignment Details",
+                  description: `Asset ${assignment.asset?.assetTag || assignment.asset?.serialNumber || assignment.id} | ${getStatusLabel(assignment.status)}`,
+                });
+              }}
+              onRevert={() => {
+                setSelected(assignment);
+                setRevertReason("");
+                setRevertOpen(true);
+              }}
             />
           ))}
         </Section>
       )}
 
-      <Section title={isAdmin ? "All Assignments" : "My Assignments"}>
+      <Section title="All Assignments">
         {filteredAssignments.length === 0 ? (
           <div className="rounded-xl border p-8 text-center text-muted-foreground">No assignments found.</div>
         ) : (
@@ -331,30 +359,14 @@ export default function Assignments() {
             <AssignmentCard
               key={assignment.id}
               assignment={assignment}
-              isAdmin={isAdmin}
               busy={busy === assignment.id}
-              onAccept={() => {
-                setSelected(assignment);
-                setAcceptedTerms(TERMS.map(() => false));
-                setAcceptOpen(true);
-              }}
-              onRefuse={() => {
-                setSelected(assignment);
-                setRefuseReason("");
-                setRefuseOpen(true);
-              }}
-              onRequestReturn={() => {
-                setSelected(assignment);
-                setRequestForm({ condition: "", accessories: "" });
-                setRequestOpen(true);
-              }}
               onApproveReturn={() => {
                 setSelected(assignment);
                 setApproveForm({
                   condition: "",
                   accessories: "",
                   note: "",
-                  nextLaptopStatus: "AVAILABLE",
+                  nextLaptopStatus: "IN_STOCK",
                 });
                 setApproveOpen(true);
               }}
@@ -372,16 +384,56 @@ export default function Assignments() {
                   "Pending assignment cancelled."
                 )
               }
+              onViewDetails={() => {
+                toast({
+                  title: "Assignment Details",
+                  description: `Asset ${assignment.asset?.assetTag || assignment.asset?.serialNumber || assignment.id} | ${getStatusLabel(assignment.status)}`,
+                });
+              }}
+              onRevert={() => {
+                setSelected(assignment);
+                setRevertReason("");
+                setRevertOpen(true);
+              }}
             />
           ))
         )}
       </Section>
 
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>
+          Showing {assignments.length} of {total} assignments
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+          >
+            Prev
+          </Button>
+          <span>
+            Page {page} of {Math.max(1, totalPages)}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages || loading}
+            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+
       <NewAssignmentModal
         open={newOpen}
         busy={busy === "create"}
-        laptops={availableLaptops}
-        staff={staff}
+        locations={availableLocations}
+        departments={availableDepartments}
         accessories={accessories}
         accessoriesLoading={accessoriesLoading}
         accessoriesError={accessoriesError}
@@ -393,84 +445,10 @@ export default function Assignments() {
             "/assignments",
             payload,
             "Created",
-            "Assignment is pending acceptance.",
+            "Assignment has been created.",
             () => setNewOpen(false)
           )
         }
-      />
-
-      <TermsModal
-        open={acceptOpen}
-        terms={Array.from(TERMS)}
-        checked={acceptedTerms}
-        onCheckedChange={(index, value) =>
-          setAcceptedTerms((current) =>
-            current.map((item, itemIndex) => (itemIndex === index ? value : item))
-          )
-        }
-        canAccept={Boolean(selected) && canAccept}
-        submitting={busy === selected?.id}
-        onAccept={() =>
-          selected &&
-          void handlePost(
-            selected.id,
-            `/assignments/${selected.id}/accept`,
-            {
-              termsAccepted: true,
-              termsVersion: TERMS_VERSION,
-              acceptedTerms,
-            },
-            "Accepted",
-            "Assignment is now active.",
-            () => setAcceptOpen(false)
-          )
-        }
-        onOpenChange={setAcceptOpen}
-      />
-
-      <RefuseModal
-        open={refuseOpen}
-        reason={refuseReason}
-        submitting={busy === selected?.id}
-        onReasonChange={setRefuseReason}
-        onSubmit={() =>
-          selected &&
-          void handlePost(
-            selected.id,
-            `/assignments/${selected.id}/refuse`,
-            { reason: refuseReason || undefined },
-            "Refused",
-            "Assignment has been refused.",
-            () => setRefuseOpen(false)
-          )
-        }
-        onOpenChange={setRefuseOpen}
-      />
-
-      <ReturnRequestModal
-        open={requestOpen}
-        condition={requestForm.condition}
-        accessories={requestForm.accessories}
-        submitting={busy === selected?.id}
-        onConditionChange={(condition) => setRequestForm((current) => ({ ...current, condition }))}
-        onAccessoriesChange={(accessories) =>
-          setRequestForm((current) => ({ ...current, accessories }))
-        }
-        onSubmit={() =>
-          selected &&
-          void handlePost(
-            selected.id,
-            `/assignments/${selected.id}/request-return`,
-            {
-              returnCondition: requestForm.condition ? { summary: requestForm.condition } : undefined,
-              accessoriesReturned: parseCsv(requestForm.accessories),
-            },
-            "Requested",
-            "Return request submitted.",
-            () => setRequestOpen(false)
-          )
-        }
-        onOpenChange={setRequestOpen}
       />
 
       <ApproveReturnModal
@@ -519,12 +497,56 @@ export default function Assignments() {
             `/assignments/${selected.id}/admin-reject-return`,
             { reason: rejectReason.trim() },
             "Rejected",
-            "Return request rejected. Assignment remains with staff.",
+            "Return request rejected. Assignment remains with current target.",
             () => setRejectOpen(false)
           )
         }
         onOpenChange={setRejectOpen}
       />
+
+      <AlertDialog
+        open={revertOpen}
+        onOpenChange={(open) => {
+          setRevertOpen(open);
+          if (!open) {
+            setRevertReason("");
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revert this assignment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will unassign the asset immediately and return it to inventory.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="revert-reason" className="text-sm font-medium">
+              Reason (optional)
+            </label>
+            <Textarea
+              id="revert-reason"
+              rows={3}
+              value={revertReason}
+              onChange={(event) => setRevertReason(event.target.value)}
+              placeholder="Add an optional reason for audit trail"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy === selected?.id}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void handleRevertAssignment();
+              }}
+              disabled={busy === selected?.id}
+            >
+              {busy === selected?.id ? "Reverting..." : "Revert Assignment"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -543,6 +565,7 @@ function getStatusLabel(status: AssignmentStatus): string {
   if (status === "RETURN_REQUESTED") return "Return Requested";
   if (status === "RETURN_APPROVED") return "Returned";
   if (status === "RETURN_REJECTED") return "Return Rejected";
+  if (status === "REVERTED") return "Reverted";
   return "Cancelled";
 }
 
@@ -564,37 +587,46 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function AssignmentCard({
   assignment,
-  isAdmin,
   busy,
-  onAccept,
-  onRefuse,
-  onRequestReturn,
   onApproveReturn,
   onRejectReturn,
   onCancelPending,
+  onViewDetails,
+  onRevert,
 }: {
   assignment: Assignment;
-  isAdmin: boolean;
   busy: boolean;
-  onAccept: () => void;
-  onRefuse: () => void;
-  onRequestReturn: () => void;
   onApproveReturn: () => void;
   onRejectReturn: () => void;
   onCancelPending: () => void;
+  onViewDetails: () => void;
+  onRevert: () => void;
 }) {
   const issuedAccessories = parseAccessories(assignment.accessoriesIssuedJson);
+  const bundleAssets = assignment.bundleAssets || [];
+  const asset = assignment.asset || assignment.laptop;
+  const assetType = assignment.asset?.assetType || "LAPTOP";
+  const targetType = assignment.targetType || "STAFF";
 
   return (
     <div className="rounded-xl border bg-card p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="font-semibold">
-            {assignment.laptop?.brand} {assignment.laptop?.model} to {assignment.staff?.name}
+            {asset?.brand} {asset?.model} to {assignment.staff?.name || "Target"}
           </p>
-          <p className="text-sm text-muted-foreground">
-            {assignment.laptop?.assetTag || assignment.laptop?.serialNumber} | {assignment.staff?.department}
-          </p>
+          <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+            <Badge variant="outline">{assetType}</Badge>
+            <span>{asset?.assetTag || asset?.serialNumber}</span>
+            <span>|</span>
+            <span>
+              {targetType === "STAFF"
+                ? assignment.staff?.name || "Staff"
+                : targetType === "LOCATION"
+                  ? `Location: ${assignment.location || "-"}`
+                  : `Department: ${assignment.department || "-"}`}
+            </span>
+          </div>
           <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
             <Calendar className="h-4 w-4" />
             Issued {new Date(assignment.assignedDate).toLocaleDateString()}
@@ -606,6 +638,15 @@ function AssignmentCard({
               ))}
             </div>
           )}
+          {bundleAssets.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {bundleAssets.map((item) => (
+                <Badge key={item.assignmentId} variant="secondary">
+                  {item.assetType}: {item.assetTag || item.serialNumber}
+                </Badge>
+              ))}
+            </div>
+          )}
           {assignment.status === "REFUSED" && assignment.refusedReason && (
             <p className="mt-1 text-sm text-destructive">{assignment.refusedReason}</p>
           )}
@@ -613,28 +654,32 @@ function AssignmentCard({
             <p className="mt-1 text-sm text-destructive">{assignment.returnRejectedReason}</p>
           )}
         </div>
-        <Badge variant={getStatusVariant(assignment.status)}>{getStatusLabel(assignment.status)}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={getStatusVariant(assignment.status)}>{getStatusLabel(assignment.status)}</Badge>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="ghost" disabled={busy}>
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="bg-popover">
+              <DropdownMenuItem className="gap-2" onClick={onViewDetails}>
+                <Eye className="h-4 w-4" />
+                View details
+              </DropdownMenuItem>
+              {assignment.status !== "REVERTED" && (
+                <DropdownMenuItem className="gap-2 text-destructive" onClick={onRevert}>
+                  <Undo2 className="h-4 w-4" />
+                  Revert assignment
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {!isAdmin && assignment.status === "PENDING_ACCEPTANCE" && (
-          <>
-            <Button size="sm" onClick={onAccept} disabled={busy}>
-              Review & Accept
-            </Button>
-            <Button size="sm" variant="destructive" onClick={onRefuse} disabled={busy}>
-              Refuse
-            </Button>
-          </>
-        )}
-
-        {!isAdmin && (assignment.status === "ACTIVE" || assignment.status === "RETURN_REJECTED") && (
-          <Button size="sm" variant="outline" onClick={onRequestReturn} disabled={busy}>
-            Request Return
-          </Button>
-        )}
-
-        {isAdmin && assignment.status === "RETURN_REQUESTED" && (
+        {assignment.status === "RETURN_REQUESTED" && (
           <>
             <Button size="sm" onClick={onApproveReturn} disabled={busy}>
               Approve Return
@@ -645,10 +690,16 @@ function AssignmentCard({
           </>
         )}
 
-        {isAdmin && assignment.status === "PENDING_ACCEPTANCE" && (
+        {assignment.status === "PENDING_ACCEPTANCE" && (
           <Button size="sm" variant="outline" onClick={onCancelPending} disabled={busy}>
             Cancel Pending
           </Button>
+        )}
+
+        {assignment.status === "REVERTED" && (
+          <p className="text-sm text-muted-foreground">
+            Assignment reverted{assignment.revertReason ? `: ${assignment.revertReason}` : "."}
+          </p>
         )}
       </div>
     </div>

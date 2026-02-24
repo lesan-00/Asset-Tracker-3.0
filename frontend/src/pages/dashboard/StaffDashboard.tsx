@@ -97,7 +97,7 @@ export default function StaffDashboard() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Staff Dashboard</h1>
-        <p className="text-muted-foreground">Your laptop and issue activity</p>
+        <p className="text-muted-foreground">Overview of assigned assets and operational status.</p>
       </div>
 
       {loading && (
