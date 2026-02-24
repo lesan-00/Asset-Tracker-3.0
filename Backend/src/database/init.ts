@@ -1,5 +1,21 @@
 import pool from "./connection.js";
 
+async function hasBaseTable(tableName: string): Promise<boolean> {
+  const [rows] = await pool.query(
+    `
+      SELECT TABLE_TYPE as tableType
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+      LIMIT 1
+    `,
+    [tableName]
+  );
+
+  const firstRow = Array.isArray(rows) ? (rows as any[])[0] : null;
+  return String(firstRow?.tableType || "").toUpperCase() === "BASE TABLE";
+}
+
 export async function initializeDatabase() {
   const seedDemoData = String(process.env.SEED_DEMO_DATA || "false").toLowerCase() === "true";
   try {
@@ -664,7 +680,11 @@ async function ensureIssuesTableCompatibility() {
     `);
   }
 
-  if (existingColumns.has("asset_id") && existingColumns.has("laptop_id")) {
+  if (
+    existingColumns.has("asset_id") &&
+    existingColumns.has("laptop_id") &&
+    (await hasBaseTable("laptops"))
+  ) {
     await pool.query(`
       UPDATE issues i
       JOIN laptops l ON l.id = i.laptop_id
@@ -676,6 +696,8 @@ async function ensureIssuesTableCompatibility() {
       SET i.asset_id = ass.id
       WHERE i.asset_id IS NULL
     `);
+  } else if (existingColumns.has("asset_id") && existingColumns.has("laptop_id")) {
+    console.log("[DB INIT] Skipping issues laptop->asset backfill (no base laptops table)");
   }
 
   const [indexRows] = await pool.query("SHOW INDEX FROM issues");
@@ -878,6 +900,11 @@ async function ensureAssetsTableCompatibility() {
 
 async function migrateLaptopsToAssets() {
   try {
+    if (!(await hasBaseTable("laptops"))) {
+      console.log("[Assets Migration] Skipped laptops -> assets migration (no base laptops table)");
+      return;
+    }
+
     const [laptopRows] = await pool.query(`
       SELECT
         id,
@@ -1137,7 +1164,11 @@ async function ensureAssignmentsTableCompatibility() {
   await addColumnIfMissing("accessories_issued_json", "LONGTEXT NULL");
   await addColumnIfMissing("accessories_returned_json", "LONGTEXT NULL");
 
-  if (existingColumns.has("asset_id") && existingColumns.has("laptop_id")) {
+  if (
+    existingColumns.has("asset_id") &&
+    existingColumns.has("laptop_id") &&
+    (await hasBaseTable("laptops"))
+  ) {
     await pool.query(`
       UPDATE assignments a
       JOIN laptops l ON l.id = a.laptop_id
@@ -1149,6 +1180,8 @@ async function ensureAssignmentsTableCompatibility() {
       SET a.asset_id = ass.id
       WHERE a.asset_id IS NULL
     `);
+  } else if (existingColumns.has("asset_id") && existingColumns.has("laptop_id")) {
+    console.log("[DB INIT] Skipping assignments laptop->asset backfill (no base laptops table)");
   }
 
   if (existingColumns.has("status")) {
