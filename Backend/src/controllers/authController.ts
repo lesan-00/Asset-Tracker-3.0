@@ -1,13 +1,9 @@
-import { Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
 import { UserModel } from "../models/User.js";
 import { generateToken, AuthRequest } from "../middleware/auth.js";
 import { z } from "zod";
 import crypto from "crypto";
-
-const LoginSchema = z.object({
-  email: z.string().email("Invalid email"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
-});
+import bcrypt from "bcrypt";
 
 const AdminResetPasswordSchema = z
   .object({
@@ -20,11 +16,24 @@ const AdminResetPasswordSchema = z
   );
 
 export class AuthController {
-  static async login(req: Request, res: Response) {
+  static async login(req: Request, res: Response, next: NextFunction) {
     try {
-      const validated = LoginSchema.parse(req.body);
+      const { email, password } = req.body ?? {};
 
-      const user = await UserModel.findByEmail(validated.email);
+      if (
+        typeof email !== "string" ||
+        typeof password !== "string" ||
+        email.trim() === "" ||
+        password.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "Email and password are required",
+        });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const user = await UserModel.findByEmail(normalizedEmail);
       if (!user) {
         return res.status(401).json({
           success: false,
@@ -32,20 +41,11 @@ export class AuthController {
         });
       }
 
-      const isPasswordValid = await UserModel.verifyPassword(
-        user,
-        validated.password
-      );
+      const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
       if (!isPasswordValid) {
         return res.status(401).json({
           success: false,
           error: "Invalid email or password",
-        });
-      }
-      if (user.role !== "ADMIN") {
-        return res.status(403).json({
-          success: false,
-          error: "Access restricted to administrators",
         });
       }
 
@@ -64,29 +64,13 @@ export class AuthController {
         });
       }
 
-      // Return the user without querying again, just format it
-      const userPublic = {
-        ...refreshedUser,
-      };
-
-      res.json({
+      return res.json({
         success: true,
-        data: {
-          user: userPublic,
-          token,
-        },
+        token,
+        user: refreshedUser,
       });
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({
-          success: false,
-          error: error.errors[0].message,
-        });
-      }
-      res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : "Login failed",
-      });
+      return next(error);
     }
   }
 
