@@ -17,17 +17,74 @@ const AdminResetPasswordSchema = z
 
 export class AuthController {
   static async login(req: Request, res: Response, next: NextFunction) {
-    return res.status(200).json({
-      success: true,
-      message: "Temporary dev login",
-      token: "temporary-dev-token",
-      user: {
-        id: "1",
-        email: "admin@assettracker.local",
-        fullName: "System Administrator",
-        role: "ADMIN",
-      },
-    });
+    try {
+      const { email, password } = req.body ?? {};
+
+      if (
+        typeof email !== "string" ||
+        typeof password !== "string" ||
+        email.trim() === "" ||
+        password.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Login failed",
+          error: "Email and password are required",
+          user: null,
+          token: null,
+        });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const user = await UserModel.findByEmail(normalizedEmail);
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid credentials",
+          error: "Invalid email or password",
+          user: null,
+          token: null,
+        });
+      }
+
+      const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid credentials",
+          error: "Invalid email or password",
+          user: null,
+          token: null,
+        });
+      }
+
+      const token = generateToken({
+        userId: user.id,
+        email: user.email,
+        role: user.role,
+      });
+
+      await UserModel.updateLastLogin(user.id);
+      const refreshedUser = await UserModel.findById(user.id);
+      if (!refreshedUser) {
+        return res.status(404).json({
+          success: false,
+          message: "Login failed",
+          error: "User not found",
+          user: null,
+          token: null,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: refreshedUser,
+      });
+    } catch (error) {
+      return next(error);
+    }
   }
 
   static async register(req: Request, res: Response) {
