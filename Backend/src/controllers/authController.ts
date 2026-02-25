@@ -28,7 +28,10 @@ export class AuthController {
       ) {
         return res.status(400).json({
           success: false,
+          message: "Login failed",
           error: "Email and password are required",
+          user: null,
+          token: null,
         });
       }
 
@@ -37,7 +40,10 @@ export class AuthController {
       if (!user) {
         return res.status(401).json({
           success: false,
+          message: "Invalid credentials",
           error: "Invalid email or password",
+          user: null,
+          token: null,
         });
       }
 
@@ -45,7 +51,10 @@ export class AuthController {
       if (!isPasswordValid) {
         return res.status(401).json({
           success: false,
+          message: "Invalid credentials",
           error: "Invalid email or password",
+          user: null,
+          token: null,
         });
       }
 
@@ -60,12 +69,16 @@ export class AuthController {
       if (!refreshedUser) {
         return res.status(404).json({
           success: false,
+          message: "Login failed",
           error: "User not found",
+          user: null,
+          token: null,
         });
       }
 
       return res.json({
         success: true,
+        message: "Login successful",
         token,
         user: refreshedUser,
       });

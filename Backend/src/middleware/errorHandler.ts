@@ -8,15 +8,21 @@ export const errorHandler = (
 ) => {
   console.error(error);
 
-  res.status(500).json({
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).json({
     success: false,
+    message: "Request failed",
     error: error.message || "Internal server error",
   });
 };
 
 export const notFound = (req: Request, res: Response) => {
-  res.status(404).json({
+  return res.status(404).json({
     success: false,
+    message: "Route not found",
     error: "Route not found",
   });
 };
