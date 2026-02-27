@@ -1,4 +1,10 @@
-const API_BASE = "/api";
+const configuredApiUrl = import.meta.env.VITE_API_URL as string | undefined;
+if (!configuredApiUrl) {
+  console.error(
+    "VITE_API_URL is undefined. Set VITE_API_URL to your deployed backend API base URL."
+  );
+}
+const API_BASE = configuredApiUrl ? configuredApiUrl.replace(/\/+$/, "") : "";
 
 export interface ApiResponse<T> {
   success: boolean;

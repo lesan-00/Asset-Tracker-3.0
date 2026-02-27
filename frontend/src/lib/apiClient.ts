@@ -22,7 +22,7 @@ export interface ApiResponse<T> {
 }
 
 class APIClient {
-  private baseURL = "/api";
+  private baseURL = getApiBaseUrl();
 
   /**
    * Main request handler
@@ -163,7 +163,7 @@ class APIClient {
    */
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await fetch("/api/health", {
+      const response = await fetch(`${this.baseURL}/health`, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
       });
@@ -199,5 +199,19 @@ export class APIClientError extends Error {
 
 // Development flag
 const dev = typeof import.meta.env !== "undefined" && import.meta.env.DEV;
+const configuredApiUrl =
+  typeof import.meta.env !== "undefined"
+    ? (import.meta.env.VITE_API_URL as string | undefined)
+    : undefined;
+
+function getApiBaseUrl(): string {
+  if (!configuredApiUrl) {
+    console.error(
+      "VITE_API_URL is undefined. Set VITE_API_URL to your deployed backend API base URL."
+    );
+    return "";
+  }
+  return configuredApiUrl.replace(/\/+$/, "");
+}
 
 export const apiClient = new APIClient();

@@ -26,6 +26,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const API_BASE_URL = import.meta.env.VITE_API_URL as string | undefined;
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -70,18 +71,33 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, []);
 
   const login = async (email: string, password: string) => {
-    const response = await fetch("/api/auth/login", {
+    if (!API_BASE_URL) {
+      console.error(
+        "VITE_API_URL is undefined. Set VITE_API_URL to your deployed backend API base URL."
+      );
+      throw new Error("API configuration missing");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Login failed");
+    const responseText = await response.text();
+    let data: any = null;
+    if (responseText) {
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error("Login failed");
+      }
     }
 
-    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || data?.message || "Login failed");
+    }
+
     const payload = data?.data ?? data;
     const newToken = payload?.token;
     const newUser = payload?.user;
