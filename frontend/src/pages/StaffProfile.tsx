@@ -32,6 +32,17 @@ interface StaffProfileData {
   status?: StaffStatus;
   createdAt?: string;
   updatedAt?: string;
+  assignedAssets?: Array<{
+    assignmentId: string;
+    status: string;
+    assignedDate: string | null;
+    asset: {
+      id: number | null;
+      assetTag: string;
+      assetType: string;
+      label: string;
+    } | null;
+  }>;
 }
 
 const editSchema = z.object({
@@ -96,6 +107,7 @@ export default function StaffProfilePage() {
   const displayStatus = normalizeStatus(profile?.status);
   const epfValue = getDisplayEpf(profile?.epfNo || profile?.epf_no);
   const memberSince = profile?.createdAt ? new Date(profile.createdAt).toLocaleDateString() : "-";
+  const assignedAssets = Array.isArray(profile?.assignedAssets) ? profile.assignedAssets : [];
 
   const loadProfile = async () => {
     if (!id) {
@@ -251,6 +263,28 @@ export default function StaffProfilePage() {
           <InfoRow icon={<MapPin className="h-4 w-4 text-muted-foreground" />} label="Location" value={safeValue(profile.location)} />
           <InfoRow icon={<Phone className="h-4 w-4 text-muted-foreground" />} label="Phone" value={safeValue(profile.phoneNumber || profile.phone)} />
           <InfoRow icon={<UserCircle2 className="h-4 w-4 text-muted-foreground" />} label="Member Since" value={memberSince} />
+          <div className="md:col-span-2 mt-2">
+            <div className="rounded-lg border bg-card p-4">
+              <h3 className="text-lg font-semibold">Assigned Assets</h3>
+              {assignedAssets.length === 0 ? (
+                <p className="mt-2 text-sm text-muted-foreground">No assignments found for this staff member.</p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {assignedAssets.map((item) => (
+                    <div key={item.assignmentId} className="rounded-lg border p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-medium">{item.asset?.label || "Asset not found"}</p>
+                        <Badge variant="secondary">{formatAssignmentStatus(item.status)}</Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Assigned: {item.assignedDate ? new Date(item.assignedDate).toLocaleString() : "-"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -352,4 +386,12 @@ function getDisplayEpf(value?: string) {
   if (!normalized) return null;
   if (/^legacy-/i.test(normalized)) return null;
   return normalized;
+}
+
+function formatAssignmentStatus(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .split("_")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
 }
