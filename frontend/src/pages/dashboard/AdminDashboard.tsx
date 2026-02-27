@@ -36,6 +36,8 @@ type AssetFormState = {
 const typeOrder: AssetType[] = [
   "LAPTOP",
   "DESKTOP",
+  "PDA",
+  "HCS_CRANE_SCALE",
   "MOBILE_PHONE",
   "PRINTER",
   "SWITCH",
