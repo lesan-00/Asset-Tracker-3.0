@@ -6,6 +6,8 @@ export type AssetType =
   | "SWITCH"
   | "ROUTER"
   | "DESKTOP"
+  | "PDA"
+  | "HCS_CRANE_SCALE"
   | "MOBILE_PHONE"
   | "SYSTEM_UNIT"
   | "MONITOR"

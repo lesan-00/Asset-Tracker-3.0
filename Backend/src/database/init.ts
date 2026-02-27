@@ -280,7 +280,7 @@ export async function initializeDatabase() {
       CREATE TABLE IF NOT EXISTS assets (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         asset_tag VARCHAR(100) NOT NULL UNIQUE,
-        asset_type ENUM('LAPTOP', 'PRINTER', 'SWITCH', 'ROUTER', 'DESKTOP', 'MOBILE_PHONE', 'SYSTEM_UNIT', 'MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET') NOT NULL,
+        asset_type ENUM('LAPTOP', 'PRINTER', 'SWITCH', 'ROUTER', 'DESKTOP', 'PDA', 'HCS_CRANE_SCALE', 'MOBILE_PHONE', 'SYSTEM_UNIT', 'MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET') NOT NULL,
         brand VARCHAR(255) NOT NULL,
         model VARCHAR(255) NOT NULL,
         imei_no VARCHAR(20) NULL UNIQUE,
@@ -821,7 +821,7 @@ async function ensureAssetsTableCompatibility() {
   await addColumnIfMissing("asset_tag", "VARCHAR(100) NOT NULL");
   await addColumnIfMissing(
     "asset_type",
-    "ENUM('LAPTOP', 'PRINTER', 'SWITCH', 'ROUTER', 'DESKTOP', 'MOBILE_PHONE', 'SYSTEM_UNIT', 'MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET') NOT NULL DEFAULT 'LAPTOP'"
+    "ENUM('LAPTOP', 'PRINTER', 'SWITCH', 'ROUTER', 'DESKTOP', 'PDA', 'HCS_CRANE_SCALE', 'MOBILE_PHONE', 'SYSTEM_UNIT', 'MONITOR', 'KEYBOARD', 'MOUSE', 'HEADSET') NOT NULL DEFAULT 'LAPTOP'"
   );
   await addColumnIfMissing("brand", "VARCHAR(255) NOT NULL DEFAULT 'Unknown'");
   await addColumnIfMissing("model", "VARCHAR(255) NOT NULL DEFAULT 'Unknown'");
@@ -851,6 +851,8 @@ async function ensureAssetsTableCompatibility() {
       'SWITCH',
       'ROUTER',
       'DESKTOP',
+      'PDA',
+      'HCS_CRANE_SCALE',
       'MOBILE_PHONE',
       'SYSTEM_UNIT',
       'MONITOR',

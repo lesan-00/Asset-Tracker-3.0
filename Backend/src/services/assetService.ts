@@ -59,6 +59,8 @@ export type AssetPermanentDeleteResult = {
 const allowedImportTypes: AssetType[] = [
   "LAPTOP",
   "DESKTOP",
+  "PDA",
+  "HCS_CRANE_SCALE",
   "PRINTER",
   "SWITCH",
   "ROUTER",
