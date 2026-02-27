@@ -86,7 +86,7 @@ export class AssetModel {
         data.model,
         data.imeiNo ?? null,
         data.serialNumber ?? null,
-        data.specifications ?? null,
+        normalizeSpecificationsForWrite(data.specifications ?? null),
         data.department ?? null,
         data.status,
         data.location,
@@ -425,7 +425,9 @@ export class AssetModel {
     if (data.model !== undefined) setValue("model", data.model);
     if (data.imeiNo !== undefined) setValue("imei_no", data.imeiNo ?? null);
     if (data.serialNumber !== undefined) setValue("serial_number", data.serialNumber ?? null);
-    if (data.specifications !== undefined) setValue("specifications", data.specifications ?? null);
+    if (data.specifications !== undefined) {
+      setValue("specifications", normalizeSpecificationsForWrite(data.specifications ?? null));
+    }
     if (data.department !== undefined) setValue("department", data.department ?? null);
     if (data.status !== undefined) setValue("status", data.status);
     if (data.location !== undefined) setValue("location", data.location);
@@ -604,7 +606,7 @@ export class AssetModel {
       model: row.model,
       imeiNo: row.imeiNo || row.imei_no || null,
       serialNumber: row.serialNumber || row.serial_number || null,
-      specifications: row.specifications || null,
+      specifications: normalizeSpecificationsForRead(row.specifications),
       department: row.department || null,
       status: row.status,
       location: row.location,
@@ -621,6 +623,43 @@ export class AssetModel {
 function safeParseSpecifications(value: string): unknown {
   try {
     return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeSpecificationsForWrite(value?: string | null): string | null {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value);
+  if (normalized.trim() === "") return null;
+
+  // Keep valid JSON as-is; otherwise wrap plain text to valid JSON string
+  // for databases where `specifications` is typed as JSON.
+  try {
+    JSON.parse(normalized);
+    return normalized;
+  } catch {
+    return JSON.stringify(normalized);
+  }
+}
+
+function normalizeSpecificationsForRead(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed === "string") return parsed;
+    return JSON.stringify(parsed);
   } catch {
     return value;
   }
